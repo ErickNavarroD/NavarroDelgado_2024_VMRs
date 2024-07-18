@@ -1,0 +1,272 @@
+---
+title: "CHILD cord blood mQTLs"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+date: "2024-03-06"
+---
+
+# Introduction
+
+The goal of this Rmd is to conduct an mQTL analysis on CHILD cord blood samples. To do so, I will use the [Matrix eQTL R package ](https://academic.oup.com/bioinformatics/article/28/10/1353/213326). The required files are the following:
+
+  -   SNP file: Text format, tab deliminated. Rows as SNPs and colums as samples (both included).
+  -   SNP metadata file: Text format, tab deliminated. Rows as SNPs, and cloumns as "snpid","chr","pos" (both included).
+  -   DNAme file (M values are preferred): Text format, tab deliminated. Rows as CpGs and columns as samples (both included).
+  -   DNAme metadata file: Text format, tab deliminated. Rows as CpGs, and cloumns as "geneid","chr","left","right" (both included). Sine we are using CpGs, both left and right are the position of the probe. 
+  -   Covariates file: Text format, tab deliminated. Rows as covariates, e.g. age, sex, cell type proportions PCs and genetic Ancestry PCs and columns as samples (both included). All covariates must be numeric-encoded. 
+
+# Analysis 
+
+Code adapted from the [script](http://www.bios.unc.edu/research/genomic_software/Matrix_eQTL/R.html#cis) provided by the developers. 
+
+```{r, eval=FALSE}
+#Load libraries
+library(methods)
+library(MatrixEQTL) 
+library(tidyverse)
+library(data.table)
+```
+
+## Create required files 
+
+Despite having most of the files already from the VMR project, I need to create the files again. This is because in the VMRs dataset, around 100 individuals were filtered out of the analysis because they didnt have full environmental data. Since that filtering does not make sense for an mQTL analysis and would just mean a reduction in power, I will include them. Furthermore, I need ro reformat them into the required format needed by matrix eQTL.
+
+### DNAme 
+```{r, eval=FALSE}
+CHILD_cord = readRDS("Objects/Cord_cleaned_RGset.rds")
+
+M_values_raw = Biobase::exprs(CHILD_cord) %>%
+  as.data.frame() %>% 
+  dplyr::select(metadata$Sample_Name)
+
+#Load epic array info
+load("EPIC_fdat.RData") 
+sexual_probes = fData_EPIC %>% 
+  dplyr::select(TargetID, CHR) %>% 
+  dplyr::filter(CHR %in% c("X", "Y")) %>% 
+  dplyr::pull(TargetID)
+
+M_values_raw = M_values_raw %>% 
+  filter(!row.names(M_values_raw) %in% sexual_probes)
+
+tiny_head(M_values_raw) #Right format
+
+#Will rename the columns to the subject ID though 
+
+colnames(M_values_raw) = str_sub(colnames(M_values_raw), end = -3)
+dim(M_values_raw) # 786359    790
+
+fwrite(M_values_raw, col.names = TRUE, row.names = TRUE, quote = FALSE, sep = ",", file = "Objects/m_values.csv")
+
+cpg_metadata = fData_EPIC |> 
+  dplyr::filter(TargetID %in% rownames(M_values_raw)) |> 
+  dplyr::rename(cpgID = TargetID, 
+         chr = CHR) |> 
+  mutate(left = MAPINFO, 
+         right = MAPINFO) |> 
+  dplyr::select(cpgID, chr, left,right )
+
+fwrite(cpg_metadata, col.names = TRUE, row.names = FALSE, quote = FALSE, sep = "\t", file = "Objects/cpg_metadata.tsv")
+
+```
+
+
+### Covariates
+
+For this section I will create a covariates object. Many of the removed samples are from the EDA that I conducted for my VMR project. 
+
+```{r}
+tiny_head = function(x){x[1:5,1:5]} #Helper function 
+#covariates 
+sampleInfo = fread("SampleInfoFinal.csv", data.table = F) %>% 
+  filter(Sample_Type == "Cord") %>% 
+  dplyr::rename(Sex = Gender, #Babies have no gender
+                ethnicity_mom = race_mom) 
+sexual_probes = fData_EPIC %>% 
+  dplyr::select(TargetID, CHR) %>% 
+  dplyr::filter(CHR %in% c("X", "Y")) %>% 
+  dplyr::pull(TargetID)
+
+removed_preterm = sampleInfo %>% 
+  filter(Sample_Age_Days < (36*7)) %>% 
+  pull(Sample_Name)
+cell_counts_IDOL_houseman_ilrRobustPCs = fread(file = "Objects/CellCountsIDOL_and_irlRobustPCs_CordBlood.csv", data.table = FALSE) |>  
+  column_to_rownames(var = "V1")
+PCA_ancestry = readRDS("Objects/CHILD_1KG_PCA_meta.rds")
+(flagged_samples_Age = sampleInfo %>% 
+  filter(is.na(Sample_Age_Days)) %>% 
+  pull(Sample_Name)) 
+
+metadata = sampleInfo %>% 
+  dplyr::select(c(Sample_Name, Sex, Sample_Age_Days, Chip_Position, SubjectNumber)) %>% 
+  left_join( cell_counts_IDOL_houseman_ilrRobustPCs %>% #Reformat the cord blood cell type proportions to merge it
+              rownames_to_column(var = "Chip_Position"), 
+            by = "Chip_Position") %>% 
+  dplyr::select(-Chip_Position) %>% 
+  mutate(Sex = as.factor(Sex)) %>% 
+  mutate(sample_merge = str_sub(Sample_Name,1,5)) %>% #Create a new column to merge PCA
+  inner_join(PCA_ancestry %>% #change the format of the PCA data to merge it 
+              filter(pop == "Sample") %>%
+              filter(!Sample_Name %in% c("X",#tech reps with  identical coordinates. Keeping the non-cord blood sample
+                                          "Y",#Sample previously flagged in a QC
+                                          "Z", "A")) %>% #Sample removed the replicates do not cluster together
+              mutate(sample_merge =str_sub(Sample_Name,2,6)) %>% #Create a new column to merge
+              dplyr::select(sample_merge, EV1, EV2, EV3, EV4),
+            by = "sample_merge") %>% 
+  dplyr::rename(GA_EV1 = EV1, GA_EV2 = EV2, GA_EV3 = EV3, GA_EV4 = EV4) %>% 
+  filter(!Sample_Name %in% flagged_samples_Age) %>% #Remove the samples previously detected with no age data
+  filter(!Sample_Name %in% removed_preterm) %>%  #Remove pre term samples
+  dplyr::select(-sample_merge)  #remove the column created to merge 
+
+head(metadata)
+
+#Now I will modify it to the matrix eQTL format
+
+covars = metadata |> 
+  dplyr::select(SubjectNumber, Sex, Sample_Age_Days, CellType_PC1, CellType_PC2, CellType_PC3, CellType_PC4, CellType_PC5, CellType_PC6, GA_EV1, GA_EV2, GA_EV3, GA_EV4) |> 
+  mutate(SubjectNumber = as.character(SubjectNumber),
+         Sex = case_when(Sex == "f" ~ 1,
+                                  Sex == "m" ~ 0)) |> 
+  t() |> 
+  as.data.frame()
+
+tiny_head(covars)
+fwrite(covars, col.names = FALSE, row.names = TRUE, quote = FALSE, sep = "\t", file = "Objects/covars_.tsv")
+
+```
+
+### Genotyping
+
+```{r}
+#Subset the same number of samples that DNAme information
+imputed_genot_CHILD_gt_filtered = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1")
+
+#Subset to the number of individuals with DNAme data
+genotypes = imputed_genot_CHILD_gt_filtered[,colnames(M_values_raw)]
+fwrite(genotypes, file =  here("Objects/genotypes.csv"), row.names = TRUE, col.names = TRUE, sep = ",")
+
+##format SNPs metadata file 
+metadata_snps = fread("Objects/imputed_genot_CHILD_GTmetadata.csv", data.table = FALSE) |> 
+  dplyr::rename(geneid = ID, 
+         chr = CHROM,
+         pos = POS) |> 
+  dplyr::select(geneid, chr, pos)
+
+head(metadata_snps)
+
+fwrite(metadata_snps, file =  here("Objects/gt_meta_mqtl.txt"), row.names = FALSE, col.names = TRUE, sep = "\t")
+```
+
+
+## Run mQTL analysis 
+
+
+```{r}
+## Settings
+library(MatrixEQTL)
+# Linear model to use, modelANOVA or modelLINEAR
+useModel = modelLINEAR; # modelANOVA or modelLINEAR
+
+# Genotype file name
+SNP_file_name = 'Objects/imputed_genot_CHILD_GTmetadata.csv'
+snps_location_file_name = here(" Objects/gt_meta_mqtl.txt")
+
+# Gene expression file name
+expression_file_name = here(' Objects/m_values.csv')
+gene_location_file_name =  here(" Objects/cpg_metadata.tsv");
+
+# Covariates file name
+# Set to character() for no covariates
+# covariates_file_name = character();
+covariates_file_name = ' Objects/covars.tsv'
+
+# Output file name
+output_file_name_cis = " Results/cord_cis_mqtls"
+output_file_name_tra = " Results/cord_trans_mqtls"
+
+# Only associations significant at this level will be output
+pvOutputThreshold_cis = 1e-5;
+pvOutputThreshold_tra = 1e-5;
+
+# Error covariance matrix
+# Set to character() for identity.
+errorCovariance = numeric();
+# errorCovariance = read.table("Sample_Data/errorCovariance.txt");
+
+# Distance for local gene-SNP pairs
+cisDist = 1e6;
+
+## Load genotype data
+tic_load = proc.time()[3];
+
+snps = SlicedData$new();
+snps$fileDelimiter = ","; # the TAB character
+snps$fileOmitCharacters = 'NA' ;# denote missing values;
+snps$fileSkipRows = 1; # one row of column labels
+snps$fileSkipColumns = 1; # one column of row labels
+snps$fileSliceSize = 10000; # read file in pieces of 10,000 rows
+snps$LoadFile(SNP_file_name);
+
+## Load DNAme data
+gene = SlicedData$new();
+gene$fileDelimiter = ','; # the TAB character
+gene$fileOmitCharacters = 'NA'; # denote missing values;
+gene$fileSkipRows = 1; # one row of column labels
+gene$fileSkipColumns = 1; # one column of row labels
+gene$fileSliceSize = 10000; # read file in pieces of 10,000 rows
+gene$LoadFile(expression_file_name);
+
+## Load covariates
+
+cvrt = SlicedData$new();
+cvrt$fileDelimiter = '\t'; # the TAB character
+cvrt$fileOmitCharacters = 'NA'; # denote missing values;
+cvrt$fileSkipRows = 1; # one row of column labels
+cvrt$fileSkipColumns = 1; # one column of row labels
+cvrt$fileSliceSize = snps$nCols()+1; # read file in one piece
+if(length(covariates_file_name)>0) {
+    cvrt$LoadFile(covariates_file_name);
+}
+
+toc_load = proc.time()[3];
+#cat('eQTL time: ', toc_load-tic_load, ' sec\n');
+
+## Run the analysis
+snpspos = read.table(snps_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+genepos = read.table(gene_location_file_name, header = TRUE, stringsAsFactors = FALSE);
+
+mqtls = Matrix_eQTL_main(snps = snps, 
+                      gene = gene, 
+                      cvrt = cvrt,
+                      output_file_name = output_file_name_tra,
+                      pvOutputThreshold = pvOutputThreshold_tra,
+                      useModel = useModel, 
+                      errorCovariance = errorCovariance, 
+                      verbose = TRUE, 
+                      output_file_name.cis = output_file_name_cis,
+                      pvOutputThreshold.cis = pvOutputThreshold_cis,
+                      snpspos = snpspos, 
+                      genepos = genepos,
+                      cisDist = cisDist,
+                      pvalue.hist = "qqplot",
+                      min.pv.by.genesnp = FALSE,
+                      noFDRsaveMemory = FALSE);
+
+## Results:
+
+cat('Analysis done in: ', mqtls$time.in.sec, ' seconds', '\n');
+cat('Detected local eQTLs:', mqtls$cis$neqtls, '\n');
+cat('Detected distant eQTLs:',mqtls$trans$neqtls, '\n');
+
+## Plot the Q-Q plot of local and distant p-values
+
+png(filename = " Results/qqplot_cord.png")
+plot(mqtls)
+dev.off()
+
+
+```
