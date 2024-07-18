@@ -1,0 +1,203 @@
+---
+title: "Prenatal - Built environment and climate"
+author: "Erick I. Navarro-Delgado"
+date: "2023-05-17"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+## Introduction
+
+This series of documents detail the cleaning of the CHILD cord blood
+exposome data.
+
+The first step of this analysis is to get the environmental data at
+birth and create an object that collects this information
+
+In summary, the environmental data I am including fall into 4 main
+dimensions:
+
+-   Parental psychosocial
+
+-   Parental health
+
+-   Nutrition
+
+-   Built environment
+
+**This document describes the preprocesing of the built environment and climate variables during pregnancy, which in this cohort comprise mainly data derived from CANUE**
+
+We have CANUE data at 18 week prenatal and at birth. Then, I will average both of them, with na.rm = TRUE (i.e., if there is only one measure at both timepoints, that is the one that will be used). 
+
+In summary, we have the following variables: 
+
+  -   SO2, NO2 and PM2.5 measured with a single variable
+  -   O3: measured as the annual average, anual average of the highest 8-rolling average per day, and the same 2 metrics for the warm season (May-Sept). I will not use the warm season measures
+  -   NDVI (normalized difference vegetation index): quantifies vegetation greenness. Ratio between red and near infrared. We have the mean of maximum annual, maximum of annual maximum, mean of growing season, maximum of growing season mean, mean of annual mean and maximum of annual mean. For each of them we have the measure within 100, 250, 500 and 1000 meters. Studies suggest that neighborhood greenness is positively associated with self-reported health (1, 2), physical activity (3–6), and mental health (1,8,9), as well as with reduced disparities in cardiovascular health (7). 
+  -   Climate: temperature, rain, snow and number of cool and heat events information. I will use the information about temperature (annual average temperature, annual average of daily max, annual average of daily min and annual average of daily difference of max-min), annual total precipitation, annual number of days with rain, and number of days with snow. 
+
+```{r}
+# Load data and packages 
+library(tidyverse)
+library(DataExplorer)
+library(here)
+library(cowplot)
+library(abind)
+library(mice)
+library(corrr)
+
+set.seed(1)
+
+#Data at birth 
+canue_raw_birth = read.csv("relative_path/data.csv") %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  mutate(across(starts_with("C"), function(x) case_when(x %in% c(-1111, -9999, 555) ~ NA_real_, # Set -1111 ( Data insufficient to calculate value), -9999 (NoData) to NA, and 555 ("Questionnaire not applicable")
+                                                    TRUE ~ x))) 
+#*Part of the script removed to protect the encoded name of the variables*
+
+# 18 week prenatal
+canue_raw_18w = read.csv("Data.csv") %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  mutate(across(starts_with("C"), function(x) case_when(x %in% c(-1111, -9999, 555) ~ NA_real_, # Set -1111 ( Data insufficient to calculate value), -9999 (NoData) to NA  and 555 ("Questionnaire not applicable")
+                                                    TRUE ~ x))) 
+#*Part of the script removed to protect the encoded name of the variables*
+  
+#Get the average 
+all(rownames(canue_raw_18w) == rownames(canue_raw_birth)) # TRUE - the individuals are in the same order
+canue_average = rowMeans(abind(canue_raw_birth, canue_raw_18w, along = 3), dims = 2, na.rm = TRUE) %>% 
+  as.data.frame() %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) #Replace the NaN to NAs
+
+```
+
+## NDVI exploration of ranges
+For NDVI, we have measures for each variable within 100, 250, 500 and 1000 meters. I will explore how correlated they are between them to decide which one to use. 
+
+```{r}
+canue_average %>% 
+  select(starts_with("NDVI")) %>% 
+  cor(use = "pairwise.complete.obs")
+
+canue_average %>% 
+  select(starts_with("NDVI")) %>% 
+  plot_correlation(cor_args = list(use = "pairwise.complete.obs"))
+
+canue_raw_18w %>% 
+  select(starts_with("NDVI")) %>% 
+  plot_correlation(cor_args = list(use = "pairwise.complete.obs"))
+#The trend is the same without averaging 
+
+#I will see how much missing data is in each of these variables
+canue_average %>% 
+  select(starts_with("NDVI")) %>% 
+  plot_missing()
+```
+
+I am interested in the NDVI mean annual mean because that is a good indication of how green is the neighborhood throughout the year, and the NDVI maximum annual mean, which is a good indication of the greenest that the neighborhood gets.
+
+We can see that for the NDVI mean annual mean, it does not matter much which range we use; there is correlation between the variables of 100-1000 meters. Also, the missingness in all of those variables is the same. I will use the NDVI mean annual mean within 100 meters and the NDVI maximum annual mean within 1000 meters, since they have a low correlation and have a bigger potential to recapitulate different information in the models . 
+
+## Create final dataset
+```{r}
+built_final = canue_average %>% 
+  select(-c(NDVI_max_ann_mean_100,NDVI_mean_ann_mean_1000, NDVI_mean_ann_mean_250, NDVI_mean_ann_mean_500 ))
+
+head(built_final)
+dim(built_final)
+
+glimpse(built_final)
+
+
+#Remove individuals with more than 30% of the variables missing 
+filter_threshold = ncol(built_final)*0.3
+built_final = built_final %>% 
+  filter(!(rowSums(is.na(.)) > filter_threshold))
+
+
+md.pattern(built_final, rotate.names = TRUE)
+plot_missing(built_final)
+#Only one of the ozone variables has > 20% missing data
+#Not really worried about that because we have another variable capturing ozone (both of them are highly correlated) with less missing data. 
+
+#Remove variables with more than 15% missing data 
+built_final = built_final %>% 
+  select(-o3_ppb_ann_ave)
+
+```
+
+
+### Remove variables with low variability 
+
+```{r}
+# explore variables that seem to have low variability
+plot_histogram(built_final)
+
+#All looks good
+```
+
+
+### Explore correlation
+
+```{r}
+plot_correlation(built_final, cor_args = list(use = "pairwise.complete.obs"))
+
+library(corrr)
+(cor = built_final %>% 
+  correlate() %>% 
+  shave() %>% 
+  stretch() %>% 
+  filter(r > 0.7) %>% 
+  arrange(desc(r)))
+
+```
+
+We have a lot of correlation in all of our variables that measure temperature min, max or mean. I will keep temperature mean and discard the others.
+
+Same for rain variables. I will keep number of days 
+
+
+```{r}
+built_final = built_final %>% 
+  select(-c(rain_precipitation_ave_ann,
+            temp_ave_ann_max,
+            temp_ave_ann_min,
+            temp_ave_dif_min_max))
+
+plot_correlation(built_final, cor_args = list(use = "pairwise.complete.obs"))
+#The correlation patterns look way better now 
+
+```
+
+### Imputation
+
+```{r, message = FALSE}
+set.seed(1)
+x = mice(built_final, m = 1, maxit = 100)
+
+built_final_imp = complete(x)
+```
+
+### Save final object
+
+```{r}
+write.csv(built_final_imp %>% 
+            rownames_to_column(var = "SubjectNumber"),
+          here("Objects/built_environment_imp.csv"), row.names = FALSE)
+
+write.csv(built_final %>% 
+            rownames_to_column(var = "SubjectNumber"),
+          here("Objects/built_environment.csv"), row.names = FALSE)
+```
+
+
+
+

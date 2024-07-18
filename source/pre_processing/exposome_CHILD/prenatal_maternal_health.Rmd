@@ -1,0 +1,309 @@
+---
+title: "Prenatal - Maternal nutrition"
+author: "Erick I. Navarro-Delgado"
+date: "2023-05-22"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Introduction
+
+This series of documents detail the cleaning of the CHILD birth
+environmental data used in my project.
+
+The first step of this analysis is to get the environmental data at
+birth and create an object that collects this information
+
+In summary, the environmental data I am including fall into 4 main
+dimensions:
+
+-   Parental psychosocial
+
+-   Parental health
+
+-   Nutrition
+
+-   Built environment
+
+**This document describes the preprocesing of the maternal health history variables of the CHILD cohort**
+
+```{r}
+#Load packages 
+
+library(tidyverse)
+library(DataExplorer)
+library(here)
+library(cowplot)
+library(readxl)
+library(knitr)
+library(mice)
+
+#Load samples with DNAme information
+samples_dname = read.csv(str_glue(str_remove(here(), "enavarro/environmental_data_cleaning"), "Data/DNAm_Array/SampleInfoFinal.csv")) %>%  #Metadata of DNAme profiled samples in CHILD
+  pull(SubjectNumber)
+
+```
+
+
+## 18 weeks folder
+
+### Maternal allergies
+
+```{r}
+maternal_allergy_18w = read.csv(str_glue(str_remove(here(), "enavarro/environmental_data_cleaning"), "Data/Codebook/01_18WK_Prenatal/Mother_Health_18wk_Data.csv")) %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  filter(SubjectNumber %in% samples_dname) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  mutate(across(where(is.numeric), function(x) case_when(x %in% c(8888 ,999, 555) ~ NA_real_, # Set 8888 (subject skipped this questionnaire), 999 (no response to this question) and 555 ("Questionnaire not applicable") to NA
+                                                         x == 888 ~ 0, #Applicants said they did not have any allergy: 888 (not applicable),
+                                                         TRUE ~ x)))
+
+#We have the following open questions: 
+#  If Other food allergies, specify: (EVER)
+# If other pet allergy, specify: (EVER)
+#  If yes to having other allergies ever, specify: (EVER)
+# If other food allergy, specify: (In the last 12 months)
+#  If other CURRENT pet allergy, specify: (in the last 12 months)
+# Other CURRENT allergies, specify:  (in the last 12 months)
+```
+
+By looking at the questionnaire, I can see that the allergies section is divided into two parts: allergies ever and allergies in the last 12 months. I decided to use only the allergies that the mother has had in the last 12 months because I consider that, even if the individual has an allergy that hasn't been activated recently, it will very likely not change its physiology and therefore change the environment of the fetus. 
+
+I will do a quick exploration to check the open questions and see if its worth re coding them into new variables 
+```{r}
+#See if theres any column in the open questions worth creating a new variable with a quick analysis
+head(sort(table(unlist(strsplit(maternal_allergy_18w$X, ","))), decreasing = TRUE),15) #Nothing with a high count worth making it a new category
+head(sort(table(unlist(strsplit(maternal_allergy_18w$Y, ","))), decreasing = TRUE),15)
+#At least 20 for horses and 15 for rabbits
+head(sort(table(unlist(strsplit(maternal_allergy_18w$Z, ","))), decreasing = TRUE),15)
+#At least 40 allergies to dust, 11 to mold
+## Name of the variables XYZ is modified to protect the encoding of the variables in CHILD
+```
+
+Based on those observations, I will create the following new variables: 
+
+  - current horse allergy
+  - current rabbit allergy
+  - current dust allergy (I will group dust and dust mite allergy together)
+  - current mold allergy
+  - current food allergy  - Based on my naive assumption that any allergy could trigger an immune response that is similar enough at the uterus level so that it would not matter which allergen triggered it. 
+  - current non food allergy - based on the same assumption above
+
+```{r}
+maternal_allergy_18w = maternal_allergy_18w %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  select(-starts_with("CH"))  %>% #Drop the rest of the variables 
+  #Create new allergy variables
+  mutate(allergy_nf_rabbit_recent = case_when(allergy_open_otherpet_recent %in% c("8888", "555","999") ~ NA_real_, #If the value is one of those, set it to NA; | 8888: Subject skipped the questionnaire | 555: Questionnaire not applicable
+                                             grepl("rabb?it", allergy_open_otherpet_recent, ignore.case = TRUE) ~ 1,
+                                             TRUE ~ 0),
+         allergy_nf_horse_recent = case_when(allergy_open_otherpet_recent %in% c("8888", "555", "999") ~ NA_real_, #If the value is one of those, set it to NA; | 8888: Subject skipped the questionnaire | 555: Questionnaire not applicable
+                                             grepl("horse", allergy_open_otherpet_recent, ignore.case = TRUE) ~ 1,
+                                             TRUE ~ 0),
+         allergy_nf_dust_recent = case_when(allergy_open_other_recent %in% c("8888", "555","999") ~ NA_real_, #If the value is one of those, set it to NA; | 8888: Subject skipped the questionnaire | 555: Questionnaire not applicable
+                                             grepl("dust", allergy_open_other_recent, ignore.case = TRUE) ~ 1,
+                                             TRUE ~ 0),
+         allergy_nf_mold_recent = case_when(allergy_open_other_recent %in% c("8888", "555","999") ~ NA_real_, #If the value is one of those, set it to NA; | 8888: Subject skipped the questionnaire | 555: Questionnaire not applicable
+                                             grepl("mou?ld", allergy_open_other_recent, ignore.case = TRUE) ~ 1,
+                                             TRUE ~ 0)) %>% 
+  #Drop open questions
+  select(-starts_with("allergy_open")) %>% 
+  #Create new food and respiratory allergy variables
+  mutate(allergy_nf_recent = case_when(rowSums(is.na(select(.,starts_with("allergy_nf")))) == 8 ~ NA_real_, #Set to NA if all the allergy_nf columns are NA
+                                      rowSums(select(., starts_with("allergy_nf")), na.rm = TRUE) >= 1 ~ 1, # Set to 1 if at least one respiratory allergy is 1
+                                      rowSums(select(.,starts_with("allergy_nf")), na.rm = TRUE) == 0 ~ 0,
+                                      ),
+         allergy_food_recent = case_when(rowSums(is.na(select(.,starts_with("allergy_f")))) == 7 ~ NA_real_, #Set to NA if all the allergy_f columns are NA
+                                      rowSums(select(., starts_with("allergy_f")), na.rm = TRUE) >= 1 ~ 1, # Set to 1 if at least one food allergy is 1
+                                      rowSums(select(.,starts_with("allergy_f")), na.rm = TRUE) == 0 ~ 0,
+                                      )) %>% 
+  #Drop "other" questions
+  select(-c(allergy_nf_otherpet_recent,allergy_other_recent, allergy_f_other_recent)) %>% 
+  select(order(colnames(.))) #order colnames
+
+```
+
+### Prenatal maternal health 
+
+```{r}
+maternal_health_18w = read_excel(str_glue(str_remove(here(), "enavarro/environmental_data_cleaning"), "Data/Codebook/01_18WK_Prenatal/Prenatal_Maternal_Health_18weeks_Data.xlsx")) %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  mutate(depression = case_when(depression == 2 ~ 1, #Only take depression when its current
+                                depression %in% c(0,1)~ 0,#Set past depression or no depression to 0
+                                TRUE ~ NA_real_),
+         depression_medication = case_when(depression_medication == 2 ~ 1, #Set as 1 current depression medication
+                                           depression_medication %in% c(0,1,888) ~ 0,#888 is not applicable because they dont have depression 
+                                           TRUE ~ NA_real_)) %>% 
+  mutate(across(everything(), function(x) case_when(x %in% c(888,8888 ,999, 555) ~ NA_real_, # Set 888 (not applicable),8888 (subject skipped this questionnaire), 999 (no response to this question) and 555 ("Questionnaire not applicable") to NA
+                                                  TRUE ~ x)))
+
+# Not much to comment on this section 
+```
+
+## Derived folder
+### Derived Prenatal Smoke
+
+From CHILD's documentation:
+
+>Smoke exposure during pregnancy is defined as positive if having either maternal smoke or second hand smoke. If both maternal smoke and second hand smoke is missing, prenatal smoke exposure will be coded as missing. Otherwise, prenatal smoke exposure will be negative.
+
+```{r}
+smoke_prenatal = read_excel("data") %>% 
+  select(SubjectNumber, prenatal_smoke) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) 
+```
+
+Nothing to comment on this section 
+
+## Father folder
+I decided not to use the prior health conditions of the father because they are not really part of the fetus environment as I am conceptualizing it. The fetus is not in direct contact with the father, so its effect as an environmental exposure might be too indirect to add it as environment. 
+
+## Birth folder
+
+### Child Birth Chart Data
+
+```{r}
+child_birth_chart = read.csv("data") %>% 
+  select(-X) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  #*Part of the script removed to protect the encoded name of the variables* 
+  select(-starts_with("CHILD")) %>%  #drop the rest of the variables 
+  mutate(across(starts_with("caesarean"), function(x) case_when(x %in% c(8888, 999) ~ NA_real_, # Set 8888 ( Questionnaire skipped), and 999 ("No response to this question")
+                                                               x == 888 ~ 0, # Set 888 (not applicable) to 0 - mother did not have cesarean and therefore this was not observed
+                                                               TRUE ~ x)),
+         across(everything(), function(x) case_when(x %in% c(8888, 999, 888) ~ NA_real_, # Set 8888 ( Questionnaire skipped), 999 ("No response to this question"), and 888 (not applicable) to NA
+                                                               TRUE ~ x)),
+         birth_method_delivery = case_when(birth_method_delivery %in% c(10,11) ~ NA_character_, # 10 = not recorded
+                                           birth_method_delivery == 1 ~ "vaginal",
+                                           birth_method_delivery %in% c(2,3,4) ~ "vaginal_accessory",
+                                           birth_method_delivery %in% c(6,7) ~ "caesarean",
+                                           birth_method_delivery %in% c(8,9) ~ "caesarean_urgent"), 
+         birth_vaginal_assisted = case_when(birth_method_delivery == "vaginal_accessory" ~ 1,
+                                            is.na(birth_method_delivery) ~ NA_real_,
+                                            TRUE ~ 0),
+         birth_caesarean = case_when(birth_method_delivery %in% c("caesarean", "caesarean_urgent") ~ 1,
+                                     is.na(birth_method_delivery) ~ NA_real_,
+                                            TRUE ~ 0),
+         birth_caesarean_emergency = case_when(birth_method_delivery == "caesarean_urgent" ~ 1, 
+                                               is.na(birth_method_delivery) ~ NA_real_,
+                                               TRUE ~ 0)) %>% 
+  select(-birth_method_delivery)
+
+```
+
+For this dataset, I recoded the *birth_method_delivery* in the following three variables: 
+
+  -   vaginal_assisted = when individuals had 2-Vaginal Forceps assisted, 3-Vaginal Vacuum Extracted, 4 Assested Breech (normal delivery often with forceps)
+  -   caesarean = when individuals had 6-Elective Caesarean section, 7-Caesarean section (during labour), 8-Emergency Caesarean section (During labour),9-Emergency Caesarean section (Without labour)
+  -   caesarean_urgent = when individuals had 8-Emergency Caesarean section (During labour),9-Emergency Caesarean section (Without labour)
+
+### Maternal_Age
+
+```{r}
+maternal_age = read.csv("data")) %>% 
+  select(-X) %>% 
+  rename(maternal_age = Maternal_Age) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber) ,
+         maternal_age = case_when(maternal_age == 999 ~ NA_real_,
+                                  TRUE ~ maternal_age))
+```
+
+## Create final object
+
+### Exploration
+```{r}
+maternal_health_final =  smoke_prenatal %>% 
+  left_join(maternal_health_18w %>% rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(maternal_allergy_18w %>% 
+              rownames_to_column(var = "SubjectNumber"), 
+            by = "SubjectNumber") %>% 
+  left_join(child_birth_chart %>% rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(maternal_age,
+            by = "SubjectNumber") %>% 
+  column_to_rownames("SubjectNumber")
+
+## Check that they are coded correctly
+glimpse(maternal_health_final)
+
+dim(maternal_health_final)
+```
+
+For imputation of this dimension, I will use the same threshold for individuals with a high number of missing variables. I will remove individuals with 30% of the variables missing or more. If they have <= 15 of missing variables, I will impute the rest of the values
+
+```{r}
+#Remove individuals with more than 30% of the variables missing 
+maternal_health_final = maternal_health_final %>% 
+  filter(!(rowSums(is.na(.)) > ncol(.)*.3))
+
+md.pattern(maternal_health_final)
+plot_missing(maternal_health_final)
+#No variables have more than 15% of missing data
+
+```
+
+### Remove samples with low variability 
+
+I will remove samples with < 10 cases
+
+```{r}
+plot_histogram(maternal_health_final)
+table(maternal_health_final$preterm_deliveries_mom)
+
+plot_bar(maternal_health_final)
+
+# explore samples that seem to have low variability
+table(maternal_health_final$caesarean_failure_progress)
+table(maternal_health_final$caesarean_cephalopelvic_disproportion) 
+table(maternal_health_final$caesarean_placenta_previa) 
+table(maternal_health_final$birth_mother_hypotension) 
+table(maternal_health_final$birth_mother_hypertension) 
+table(maternal_health_final$birth_mother_cardiac_disorder) 
+table(maternal_health_final$allergy_f_fish_recent) 
+table(maternal_health_final$allergy_f_peanut_recent) 
+table(maternal_health_final$allergy_f_egg_recent) 
+table(maternal_health_final$sti) 
+table(maternal_health_final$chest_infection_pneumonia) 
+table(maternal_health_final$high_cholesterol) 
+
+## Remove samples with no variability
+maternal_health_final = maternal_health_final %>% 
+  select(-c(caesarean_eclamptic_convulsions, 
+            caesarean_cord_prolapse,
+            caesarean_placental_abruption,
+            caesarean_placenta_previa,
+            birth_mother_hypotension,
+            birth_mother_cardiac_disorder,
+            allergy_f_fish_recent,
+            sti,
+            convolsions,
+            high_cholesterol
+            ))
+```
+
+
+### Imputation
+
+```{r, message=FALSE}
+set.seed(1)
+maternal_health_final_imp = complete(mice(maternal_health_final, m = 1, maxit = 100))
+```
+
+Save final object
+```{r}
+write.csv(maternal_health_final %>% 
+            rownames_to_column(var = "SubjectNumber"),
+          here("Objects/maternal_health.csv"), row.names = FALSE)
+write.csv(maternal_health_final_imp %>% 
+            rownames_to_column(var = "SubjectNumber"),
+          here("Objects/maternal_health_imputed.csv"), row.names = FALSE)
+```
+

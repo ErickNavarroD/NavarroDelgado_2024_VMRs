@@ -1,0 +1,312 @@
+---
+title: "Prenatal - Maternal nutrition"
+author: "Erick I. Navarro-Delgado"
+date: "2023-05-18"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+# Introduction
+
+This series of documents detail the cleaning of the CHILD birth
+environmental data used in my project.
+
+The first step of this analysis is to get the environmental data at
+birth and create an object that collects this information
+
+In summary, the environmental data I am including fall into 4 main
+dimensions:
+
+-   Parental psychosocial
+
+-   Parental health
+
+-   Nutrition
+
+-   Built environment
+
+**This document describes the preprocesing of the nutrition variables of the CHILD cohort**
+
+```{r}
+#Load packages 
+library(tidyverse)
+library(DataExplorer)
+library(here)
+library(cowplot)
+library(readxl)
+library(knitr)
+library(mice)
+library(corrr)
+
+set.seed(1)
+```
+
+
+## FFQ-Derived
+This set of variables are derived from the Food Frequency Questionnaire. After talking with Dr. Alejandra Wiedeman, she suggested to take a look at the calorie intake reported from the FFQ, since the data provided by CHILD was not curated or filtered, and there were some values that were clearly outliers. She recommended to filter out individuals that had a reported implausible calorie intake values of  < 500 to 600 and > 3500 to 6500. The normal range is around 2000 (women) - 2500 (men). 
+
+In this paper that harmonizes data form different cohorts (https://www.sciencedirect.com/science/article/pii/S0022316623007794?via%3Dihub#s0002), they use a threshold of 500 and 6500. 
+
+```{r}
+ffq = read_excel("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) 
+
+ffq %>% 
+  ggplot(aes(x = "Calories intake", y = calories)) +
+  geom_jitter(alpha = 0.4) +
+  geom_hline(yintercept = c(600,3500,5000,6500))
+
+data.frame("min_500" = c(ffq %>% 
+                       filter(calories > 500,
+                              calories < 3500) %>% 
+                       nrow(),
+                       ffq %>% 
+                       filter(calories > 500,
+                              calories < 5000) %>% 
+                       nrow(),
+                     ffq %>% 
+                       filter(calories > 500,
+                              calories < 6500) %>% 
+                       nrow()),
+           "min_600" =c(ffq %>% 
+                       filter(calories > 600,
+                              calories < 3500) %>% 
+                       nrow(),
+                       c(ffq %>% 
+                       filter(calories > 600,
+                              calories < 5000) %>% 
+                       nrow(),
+                     ffq %>% 
+                       filter(calories > 600,
+                              calories < 6500) %>% 
+                       nrow())),
+           row.names = c("max_3500", "max_5000","max_6500"))
+
+# Looks like there is no difference between using a lower threshold of 500 or 600. But the upper threshold seem to be more important
+# Based on the data distribution, I decided to use an upper threshold of 6500, since those 2 samples seem to be clearly outliers that are far from the rest of the samples. 
+
+samples_keep_ffq = ffq %>% 
+       filter(calories > 500,
+              calories < 6500) %>% 
+       pull(SubjectNumber)
+```
+
+Looks like there is no difference between using a lower threshold of 500 or 600. But the upper threshold seem to be more important. Based on the data distribution, I decided to use an upper threshold of 6500, since those 2 samples seem to be clearly outliers that are far from the rest of the samples. 
+
+### Nutrients
+
+```{r}
+nutrients = read.csv("data") %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>%
+  column_to_rownames(var = "SubjectNumber") %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+   mutate(across(everything(), function(x) case_when(x %in% c(888,8888 ,999, 555) ~ NA_real_, # Set 888 (not applicable),8888 (subject skipped this questionnaire), 999 (no response to this question) and 555 ("Questionnaire not applicable") to NA
+                                                    TRUE ~ x)))
+
+#See how the elimination of outliers improve the distribution of the variables
+plot_histogram(nutrients)
+plot_histogram(nutrients[samples_keep_ffq,] )
+
+nutrients = nutrients[samples_keep_ffq,] 
+
+```
+
+### Dietary pattern
+This data is already filtered by energy intake. Actually, the thresholds used here were more strict (>500 and <4500 calories, compared to the filter I used of >600 and < 6500). 
+
+**From the CHILD documentation:**
+> This file is created by Russell de Souza (11/12/2020), primarily for the M.Sc. thesis of Pinaz Gulacha
+
+> This data file contains the servings/day of the harmonized food groups (n=36) described in de Souza et al., 2016, using only the participants in CHILD with plausible energy intake (between 500 and 4500 kcal/d). This leaves us with n= 2,953 (losing 19 either <500 or >4500; all were >4500) from the base sample used in the Zulyniak et al., 2020 eczema paper.  This paper uses only the data from CHILD to derive 3 dietary patterns, conceptually similar to Souza et al., 2016, which used data from CHILD, FAMILY, and START.
+
+>Results of note
+
+>The principal components analysis was run twice: 1) using servings/d for each food group, not adjusted for energy; 2) using servings/d for each food group, adjusted for energy. Servings/d were adjusted prior to inclusion in any analyses, using the residual method, described by Willett (mean energy = 1997 kcal). A value of 0.01 was added to the daily servings of each food category, to allow for ln-transformation prior to energy adjustment.  Below, the “factor” scores are multiplied by 100 and rounded (e.g. a score of 31 = a loading of 0.31). Only those with loads >= |.30| are presented. 
+  The patterns were very similar
+
+Variables of interest for dietary patterns analyses:
+  1.	PBscore = the plant-based diet PCA score
+  2.	WSscore = the Western diet PCA score
+  3.	BAscore = the balanced diet PCA score
+  4.	eaPBscore = the energy-adjusted plant-based diet PCA score
+  5.	eaWSscore = the energy-adjusted Western diet PCA score
+  6.	eaBAscore = the energy=adjusted balanced diet PCA score
+
+**From the [Zulyniak et al., 2020](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7224524/) paper:**
+
+>We identified three orthogonal dietary patterns based on a previous analysis [41] (S1 Table). **The PCA assigns a continuous score to each participant which indicates their degree of adherence to each of the three scores**. These scores can be positive (indicating adherence) or negative (indicating avoidance) for each participant and are independent of one another. Each of the three patterns was characterised by the foods which loaded greater than 0.30 or less than -0.30. The plant-based dietary pattern (range: −2.6 to +4.9) was characterized fruits and vegetables, whole grains, and avoidance of meats; the Western diet pattern (range: −3.9 to +5.0) was characterized by high intakes of processed meats and foods, starchy vegetables, and red meats; and the balanced diet (range: −2.6 to +7.1) included a diverse range of food groups, including meats, vegetables and fruit, fish, and plant sources of proteins (e.g. nuts, soy). Foods that did not load ≥|0.30| for a given pattern did not vary between high and low consumers of that pattern—e.g., ‘fruit’ and ‘leafy greens’ were not robust markers of adherence to a plant-based dietary pattern because the weekly consumption of ‘fruit’ and ‘leafy greens’ differed very little between individuals who’s did or dd not resemble a plant-based dietary pattern.
+
+Based on the documentation, I decided to use the enery adjusted scores, even though it should not make much of a difference using that one or the non-adjusted one. 
+
+```{r}
+diet_pattern = read.csv("data") %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>%
+  column_to_rownames(var = "SubjectNumber") %>% 
+  dplyr::rename(diet_pat_pb_score = eaPBscore,
+                diet_pat_ws_score = eaWSscore,
+                diet_pat_ba_score = eaBAscore) %>% 
+  select(starts_with("diet"))
+```
+
+### Healthy Eating Index
+
+The Healthy Eating Index is 
+
+```{r}
+hei = read.csv("data") %>% 
+  select(-c(X, subjectId)) %>% #Remove unecesary columns
+  rename(SubjectNumber = decodedSubjectId,
+         hei_tot_fruit = hei1,
+         hei_whole_fruit = hei2,
+         hei_tot_veg = hei3,
+         hei_greens_beans = hei4,
+         hei_whole_grains = hei5,
+         hei_dairy = hei6,
+         hei_tot_prot = hei7,
+         hei_seaf_plant_prot = hei8,
+         hei_fatty_acids = hei9,
+         hei_regined_grains = hei10,
+         hei_sodium = hei11,
+         hei_empty_cal = hei12,
+         hei_score_2010 = hei2010
+         ) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+
+#We have duplicated SubjectNumbers! 11 of them are 
+duplicated = hei[hei$SubjectNumber %in% unique(hei$SubjectNumber[ duplicated(hei$SubjectNumber)]), ]
+
+knitr::kable(duplicated)
+
+#Manually inspected them:
+#consistent values: 20076, 20279
+#Different values: 20236, 20344, 30708, 30730, 30234, 40822, 40136, 50680, 50289
+
+ffq$SubjectNumber[which(ffq$SubjectNumber %in% duplicated$SubjectNumber)]
+
+#Answer: 6
+```
+
+ I will remove them from the dataset
+
+```{r}
+hei = hei %>% 
+  filter(!SubjectNumber %in% duplicated$SubjectNumber,
+         SubjectNumber %in% samples_keep_ffq) #Remove individuals with implausible energy intake
+
+```
+
+## Vitamins and supplements - Zinc
+```{r}
+additional_vitamins = read.csv("data") %>% 
+  select(-X) %>% #Remove unnecesary column 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>%
+  column_to_rownames(var = "SubjectNumber") %>% 
+  select(X) %>% # Zinc Taken during pregnancy; discarded variables are Never, Prior to Pregnancy, Increased intake during pregnancy, No change of intake, Decreased intake during pregnancy. Respondents were allowed to check more than one box. 
+  rename(zn_supplement = X) %>% 
+  mutate(zn_supplement = case_when(zn_supplement %in% c(888,8888 ,999, 555) ~ NA_real_, # Set 888 (not applicable),8888 (subject skipped this questionnaire), 999 (no response to this question) and 555 ("Questionnaire not applicable") to NA
+                                                    TRUE ~ zn_supplement))
+```
+
+## Final nutrition dataset 
+
+Merge all the data sets and save the object 
+```{r}
+maternal_nutrition = ffq %>% 
+  select(SubjectNumber) %>% 
+  left_join(nutrients %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(diet_pattern %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(hei,
+            by = "SubjectNumber") %>% 
+  left_join(additional_vitamins %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+head(maternal_nutrition)
+dim(maternal_nutrition)
+## Check that they are coded correctly
+glimpse(maternal_nutrition)
+```
+
+For imputation of this dimension, I will use the same threshold for individuals with a high number of missing variables. I will remove individuals with 30% of the variables missing. On the other hand, if variables have <= 15 of missing variables, I will impute the rest of the values
+
+```{r}
+#Remove individuals with more than 40% of the variables missing 
+filter_threshold = ncol(maternal_nutrition)*0.3
+maternal_nutrition = maternal_nutrition %>% 
+  filter(!(rowSums(is.na(.)) > filter_threshold))
+
+
+md.pattern(maternal_nutrition, rotate.names = TRUE)
+plot_missing(maternal_nutrition)
+#No variables have more than 15% of missing data
+
+```
+As we would expect from this dataset, not much imputation is going to be done because individuals that did not complete the FFQ questionnaire had most of the derived variables missing. 
+
+### Remove variables with low variability 
+
+```{r}
+# explore variables that seem to have low variability
+plot_histogram(maternal_nutrition$alcohol_g)
+plot_histogram(log(maternal_nutrition$alcohol_g + 0.00001))
+
+## log transform alcohol_g
+# maternal_nutrition = maternal_nutrition %>% 
+#   mutate(alcohol_g = log(alcohol_g + 0.00001))
+##   Discussed this with Keegan and we decided it made more sense to leave it as it is, since the variability in the left side of the distribution was not worth zooming in. (i.e., would it make sense to zoom in people that had 1 drink per month or 3/4 drinks per month?)
+```
+
+
+Explore correlation
+
+```{r}
+plot_correlation(maternal_nutrition, cor_args = list(use = "pairwise.complete.obs"))
+
+library(corrr)
+(cor = maternal_nutrition %>% 
+  correlate() %>% 
+  shave() %>% 
+  stretch() %>% 
+  filter(r > 0.7) %>% 
+  arrange(desc(r)))
+```
+
+There is a lot of correlation in this dataset. I would not feel comfortable removing variables subjectively, except the folate ones that are highly correlated and are measuring the same nutrient. The highest correlation is diet folate equivalents and total folate. I will remove diet folate equivalents
+
+```{r}
+maternal_nutrition = maternal_nutrition %>% 
+  select(-diet_folate_equiv_mcg)
+
+```
+
+### Imputation
+
+```{r}
+set.seed(1)
+x = mice(maternal_nutrition, m = 1, maxit = 100)
+
+maternal_nutrition_imp = complete(x)
+```
+
+Save final object
+```{r}
+write.csv(maternal_nutrition %>% 
+            rownames_to_column(var = "SubjectNumber"), here("Objects/maternal_nutrition.csv"), row.names = FALSE)
+write.csv(maternal_nutrition_imp %>% 
+            rownames_to_column(var = "SubjectNumber"), here("Objects/maternal_nutrition_imp.csv"), row.names = FALSE)
+```
+
+

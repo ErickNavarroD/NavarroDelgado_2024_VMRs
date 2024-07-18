@@ -6,7 +6,7 @@ This repository contains the code used for all the analyses in Navarro-Delgado E
 
 The folders found in this repository are the following: 
 
-  -  `source/` : R Markdown files describing the analyses conducted. The files are named in sequential order according to their position in the analysis. Branches of the main pipeline (mostly checks and secondary analyses) are indicated with a "x.1". 
+  -  `source/` : R Markdown files describing the analyses conducted. Some parts of the code were modified to protect the encoding of the variables in the studies, since these cohorts are not publicly available data. When these modifications are present, a commented note is indicated. 
 
 ## Citing
 

@@ -1,0 +1,129 @@
+---
+title: "Prenatal environment- All dimensions"
+author: "Erick I. Navarro-Delgado"
+date: "2023-05-30"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+# Introduction
+
+This series of documents detail the cleaning of the CHILD birth
+exposome data.
+
+The first step of this analysis is to get the environmental data at
+birth and create an object that collects this information
+
+In summary, the environmental data I am including fall into 4 main
+dimensions:
+
+-   Parental psychosocial
+
+-   Parental health
+
+-   Nutrition
+
+-   Built environment
+
+**This document describes the exploratory data analysis of the full environmental dataset.** Details about the cleaning and pre processing of each dimension are in their corresponding Rmds in this folder. This is the final Rmd. 
+
+```{r}
+#Load packages 
+
+library(tidyverse)
+library(DataExplorer)
+library(here)
+library(cowplot)
+library(readxl)
+library(knitr)
+
+#Load samples with DNAme information
+samples_vmr = read.csv(here("Objects/metadata_samplesVMRs.csv")) %>%  #Metadata of samples in CHILD that are in the VMR project
+  select(Sample_Name) %>% 
+  rename(SubjectNumber = Sample_Name) %>% 
+  mutate(SubjectNumber = str_sub(SubjectNumber, end = -3))
+
+```
+
+# Create final object 
+```{r}
+#Load datasets 
+built_environment_noimp = read.csv(here("Objects/built_environment.csv")) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+maternal_nutrition_noimp = read.csv(here("Objects/maternal_nutrition.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+parental_psychosocial_noimp =  read.csv(here("Objects/maternal_psychosocial.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+parental_health_noimp = read.csv(here("Objects/maternal_health.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+
+prenatal_environment_noimp = left_join(samples_vmr, 
+                                 parental_psychosocial_noimp,
+                                 by = "SubjectNumber") %>% 
+  left_join(maternal_nutrition_noimp,by = "SubjectNumber") %>%
+  left_join(built_environment_noimp, by = "SubjectNumber") %>% 
+  left_join(parental_health_noimp, by = "SubjectNumber") %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+
+
+built_environment = read.csv(here("Objects/built_environment_imp.csv")) %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+maternal_nutrition = read.csv(here("Objects/maternal_nutrition_imp.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+parental_psychosocial =  read.csv(here("Objects/maternal_psychosocial_imp.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+parental_health = read.csv(here("Objects/maternal_health_imputed.csv"))%>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+
+prenatal_environment = left_join(samples_vmr, 
+                                 parental_psychosocial,
+                                 by = "SubjectNumber") %>% 
+  left_join(maternal_nutrition,by = "SubjectNumber") %>%
+  left_join(built_environment, by = "SubjectNumber") %>% 
+  left_join(parental_health, by = "SubjectNumber") %>% 
+  column_to_rownames(var = "SubjectNumber")
+```
+
+Explore missingness
+```{r}
+plot_missing(prenatal_environment_noimp)
+plot_missing(prenatal_environment)
+
+mice::md.pattern(prenatal_environment, rotate.names = TRUE)
+
+#Get complete cases
+
+prenatal_environment = prenatal_environment %>% 
+  drop_na()
+
+write.csv(prenatal_environment %>% 
+            rownames_to_column(var = "SubjectNumber"),
+          here("Objects/prenatal_env_vmr_clean.csv"), row.names = FALSE)
+```
+
+# Get summary statistics of the variables
+```{r}
+summary_stats_vars = prenatal_environment |> 
+  t() |> 
+  data.frame() |> 
+  rownames_to_column(var = "variable") |> 
+  pivot_longer(-variable) |> 
+  group_by(variable) |> 
+  summarise(mean= mean(value),
+            sd = sd(value),
+            median = median(value),
+            max = max(value), 
+            min = min(value)) 
+
+write.csv(summary_stats_vars, here("Objects/summary_stats_prenatal_env.csv"), row.names = FALSE)
+
+```
+
+

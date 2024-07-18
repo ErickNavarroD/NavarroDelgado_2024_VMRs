@@ -1,0 +1,1401 @@
+---
+title: "Prenatal - Parental psychosocial dimension"
+author: "Erick Navarro"
+date: "2023-03-22"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Introduction
+
+This series of documents detail the cleaning of the CHILD birth
+environmental data used in my project.
+
+The first step of this analysis is to get the environmental data at
+birth and create an object that collects this information
+
+In summary, the environmental data I am including fall into 4 main
+dimensions:
+
+-   Parental psychosocial
+
+-   Parental health
+
+-   Nutrition
+
+-   Built environment
+
+**This document describes the preprocesing and scoring of the
+psychological questionnaires that mother's responded during pregnancy
+and the socio economic status variables that we have**
+
+# Maternal psychological
+
+## Quick analysis facts
+
+-   Samples with the questionnaires not answered were set automatically
+    to NA.
+
+-   Individuals with the questionnaire answered but \> 30% of the items
+    skipped were set to NA.
+
+-   Individuals with the questionnaire answered and \<= 30% of skipped
+    items were subjected to single imputation using pmm
+
+-   The final object consists of the total score of each questionnaire
+    for individuals with fully answered questionnaires or imputed items
+    (i.e., \<= 30% of skipped items).
+
+-   The final file has the clean information **of the samples that have
+    DNAme information** based on the metadata file from CHILD found in
+    X. I
+    processed the data of all the cohort together so that the imputation
+    is more accurrate (except for CES-D and PSS, where the files only
+    had information about the samples with DNAme), but at the end the
+    samples were subset to the ones with DNAme information.
+
+## Maternal depressive symptoms and perceived stress scale
+
+Here, I will collect data from the prenatal maternal stress
+questionnaire. This questionnaire has the following subquestionnaires:
+
+-   The CES-D scale (center for epidemiological studies - depression)
+
+-   PSS (perceived stress scale)
+
+**CES-D**
+
+Mothers reported the frequency of experiencing various depression
+behaviours, cognitions and affect during the past one week using scores
+ranging from zero (none of the time) to three (most or all the time;
+five to seven days). 20-item scale (total scores are the sum of the items, which range from 0 to 60); Items 4, 8, 12 and 16 are reverse scored,  **key reference**: Radloff, L. S. The CES-D Scale: A Self-Report Depression Scale for Research in the General Population. Appl. Psychol. Meas. 1, 385–401 (1977). Five
+papers in CHILD have used this variable in the following way:
+
+-   Kang et al 2018: Objective: investigate differences in infant fecal
+    sIgA concentrations according to the presence of maternal depressive
+    symptoms during and after pregnancy. "the scores were summed, and
+    sums of 16 and greater are accepted as clinically significant levels
+    of DS" (Kang et al., 2018, p. 124). Based on the scores, mothers
+    were divided into a group with scores above the CES-D cutoff and
+    below it."So, the final score was 0 or 1 (not depressed/depressed)
+-   Matenchuk et al 2019: Objective: To investigate the mechanistic
+    pathways linking maternal education and infant sleep. Same as above,
+    created categories with the 16 value cutoff
+-   Kang et al 2020: Objective: determine the association between
+    maternal depression and stress symptom trajectories and infant fecal
+    sIgA concentrations. Did the same but made a note about the cutoff
+    being not clinically relevant: "A total score of 16 or greater was
+    considered to indicate clinically significant levels of depressive
+    symptoms; however, this cut-off value does not imply that the mother
+    had a clinical diagnosis of depression."
+-   Chow et al 2019: Objective: To identify trajectory patterns of
+    maternal depressive symptoms and perceived stress from midpregnancy
+    to 2 years postpartum and determine relationships with selected
+    sociodemographic factors including income, education, immigration,
+    and postpartum employment. They used a log transformed score of the
+    depressive symptoms as the outcome (i.e. the sum of the items) ,
+    without any cutoff.
+-   Dharma et al 2019: Objective: to examine the self-identified
+    ethnicities most susceptible to maternal psychosocial distresses
+    (depressive symptoms and perceived stress) from pregnancy through to
+    the child's preschool years. They used the questionnaire score
+    without any cutoff . Used the 16 cutoff threshold to characterize
+    and name the different trajectories, but the model itself uses the
+    raw scores. I went to the original paper and they mention the
+    following: Table 2 shows that the average CES-D score for the group
+    of 70 Washington County psychiatric inpatients was substantially and
+    significantly higher than the average for the general population
+    samples." "Seventy percent of the patients but only 21% of the
+    general population scored at and above an arbitrary cutoff score of
+    16." (Radloff, 1977, p. 9) "Although not designed for clinical
+    diagnosis, the CES-D scale is based on symptoms of depression as
+    seen in clinical cases." (Radloff, 1977, p. 8 )
+
+*Conclusion*: I feel kind of uncomfortable to use the 16 value cutoff
+and transform the variable into a categorical one. I think that treating
+it as a continuous makes more sense to capture the variability of
+depressive symptoms rather than collapsing it into "depressed" and "not
+depressed" which is what the cutoff is suggestion. The original paper
+shows that depressed people have higher scores, but that trend would
+also be captured if I use the raw scores. I can log-transform it like
+Chow et al 2019 to account for the skewness of the data, but I think
+that's better than transforming it into a binary variable.
+
+**PSS-10**
+
+The questionnaire measured how frequently mothers found their lives as
+stressful, unmanageable and overwhelming in the past month. Items were
+scored from zero (never) to four (very often) and summed, with higher
+scores representing greater stress levels. Items 4, 5, 7 and 8 are reverse scored. 
+The original instrument is a 14-item scale (PSS-14) that was developed in English (Cohen et al.,1983), which was subsequently shortened to 10 items (PSS-10) using factor analysis based on data from 2,387 U.S. residents. A four-item PSS (PSS-4) was also introduced (Cohen & Williamson, 1988), but its psychometric properties are questionable (Lee, 2012; Taylor, 2015). According to Cohen’s Laboratory for the Study of Stress, Immunity, and Disease (2021), the PSS is currently translated into 25 languages other than English. **Key reference**: Cohen, S. & Williamson, G. Perceived stress in a probability sample of the United States. in The Social Psychology of Health 31–67 (Sage). There are 3 papers in CHILD
+that use it. They are the same ones using also depressive symptoms so
+the way they do stuff is very similar.
+
+-   Kang et al 2020: Objective: determine the association between
+    maternal depression and stress symptom trajectories and infant fecal
+    sIgA concentrations. "In the absence of a validated cut-off score
+    for clinically significant levels of stress, the mean stress score
+    (of 12.96) for all mothers in the CHILD study was used as a cut-off
+    value for higher versus lower stress.""
+
+-   Chow et al 2019: Objective: To identify trajectory patterns of
+    maternal depressive symptoms and perceived stress from midpregnancy
+    to 2 years postpartum and determine relationships with selected
+    sociodemographic factors including income, education, immigration,
+    and postpartum employment. This paper used the sum of scores to make
+    the longitudinal trajectory models, and used the cutoff to name the
+    trajectories (i.e. higher stress post-partum, never, etc). The names
+    were based on this cutoff: "In the absence of established criteria
+    for evaluating perceived stress, we used the mean value across all
+    six waves (12.96) as the cut point for a high level of perceived
+    stress".
+
+-   Dharma et al 2019: Same as Chow
+
+*Conclusion*: Just as with CES-D, I think I will use the sum of the
+items as the score for this perceived stress scale (yielding a score that ranges from 0 to 40)
+
+I have 2 time points - 36 and 18 weeks pre natal. I will first compute
+the score for each individual per questionnaire and then will decide
+which time point to use.
+
+```{r, message=FALSE}
+# Load packages
+
+library(tidyverse)
+library(DataExplorer)
+library(here)
+library(readxl)
+library(ggpubr)
+library(mice)
+library(cowplot)
+library(factoextra)
+
+# Set seed
+set.seed(1)
+
+#load metadata
+
+# Load data
+prnms18w_raw <- read_excel("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+
+prnms36w_raw <- read_excel("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber))
+
+prnms_codes = read_csv("data")) %>% 
+  drop_na()
+
+#Create a single data frame with both variables 
+summarized_scores = left_join(prnms18w_raw %>% 
+                                rename(status_18 = Status,
+                                       studycenter_18 = StudyCenter) %>% 
+                                select(-c(Eligibility, StudyStatus)), #Eligibility: Everyone is "General Cohort", which is completely uninformative. 
+                              prnms36w_raw %>% 
+                                rename(status_36 = Status,
+                                       studycenter_36 = StudyCenter) %>% 
+                                select(-c(Eligibility,StudyStatus)), 
+                              by = "SubjectNumber")
+
+summarized_scores[which(summarized_scores$studycenter_18 != summarized_scores$studycenter_36),] %>% select(studycenter_18, studycenter_36,SubjectNumber)
+
+```
+
+
+```{r}
+table(summarized_scores$status_18)
+# Completed   Skipped 
+#       777        51 
+table(summarized_scores$status_36)
+# Completed   Skipped 
+#       794        34 
+
+#Create a data frame only with the questionnaire items
+summarized_scores_items = summarized_scores %>% 
+  select(-c(status_18, studycenter_18, status_36, studycenter_36)) %>% 
+  column_to_rownames(var = "SubjectNumber") 
+
+#See how many people that completed the questionnaire skipped a question. 999 is the code for skipped question
+skipped_18 = apply(summarized_scores_items[,1:30], 1, function(x) sum(x == 999))
+skipped_36 = apply(summarized_scores_items[,32:61], 1, function(x) sum(x == 999))
+(skipped_18 = skipped_18[which(skipped_18 != 0)]) #Remove individuals with no skipped questions
+(skipped_36 = skipped_36[which(skipped_36 != 0)]) #Remove individuals with no skipped questions
+
+
+#Will set the skipped questions (999) to NAs
+summarized_scores_items = summarized_scores_items %>% 
+  mutate(across(everything(), ~ case_when( .x == 999 ~ NA_real_,
+                                           TRUE ~ .x)))
+#### At this point, summarized score items is a data frame with skipped questions set to NA, and missing questionnates set as 888 or 8888
+
+```
+
+There are some individuals with missing questions. I will have to impute
+the ones that are worth imputing (i.e., not having a lot of NAs).
+
+We have the same questionnaire applied to the mothers at week 18 and
+week 36 of pregnancy. So, I have two "levels" of missingness. There are
+individuals at each time point that didnt do the questionnaire (51/828
+at 18 weeks and 34/828 at 36 weeks) And out of the individuals that did
+the questionnaire, we have some that skipped some questions (which is
+the picture that I attached). So, there are 13 individuals at each
+timepoint that skipped at least one question. The name of the vector is
+the subject ID and the value is the number of the skipped questions in
+the questionnaire (which has 30 questions) I'll remove the person with
+27 missing questions, as well as the ones that had 10 missing items from
+their corresponding sub questionnaire (i.e., since they skipped the
+whole PSS part, I'll remove them from that scale) But for the ones that
+have only 1/30 questions skipped, I think it's fair to keep them and
+impute that item? Otherwise I'd lose around 8-12 additional individuals
+per timepoint only because of a single question (in addition to the ones
+that didnt do the questionnaire) For the ones that straight up didnt do
+the questionnaire, I will set them as NAs and when I have the complete
+dataset with the other environmental variables, I'll see how feasible is
+to use complete cases
+
+### PSS
+
+#### Remove samples with high number of NAs (skipped questions)
+
+```{r}
+#### PSS 18 wk ####
+pss_18 = summarized_scores_items[summarized_scores$status_18 == "Completed" ,1:10]
+#Remove individual 40782, which has 7/10 items missing 
+removed = apply(X = pss_18, MARGIN = 1, function(x) sum(is.na(x)))
+removed[which(removed > 0)]
+#40782 50554 
+#    7     1 
+pss_18 = pss_18[rownames(pss_18) != "40782",]
+
+#### PSS 36 wk ####
+pss_36 = summarized_scores_items[summarized_scores$status_36 == "Completed",32:41]
+#Remove individuals X,Y,Z (they all didnt do the PSS questionnaire),  A (has 8/10 questions of the PSS missing) and B (4/10)
+removed = apply(X = pss_36, MARGIN = 1, function(x) sum(is.na(x)))
+removed[which(removed > 0)]
+pss_36 = pss_36[!rownames(pss_36) %in% c("X",
+                                         "Y",
+                                         "Z",
+                                         "A",
+                                         "B"),]
+
+ggarrange(plot_missing(pss_18) ,plot_missing(pss_36))
+```
+
+#### Impute missing values (i.e., skipped items)
+
+For imputation, I will use the mice R package:
+
+"Generates multiple imputations for incomplete multivariate data by
+Gibbs sampling. Missing data can occur anywhere in the data. The
+algorithm imputes an incomplete column (the target column) by generating
+'plausible' synthetic values given other columns in the data. Each
+incomplete column must act as a target column, and has its own specific
+set of predictors. The default set of predictors for a given target
+consists of all other columns in the data. For predictors that are
+incomplete themselves, the most recently generated imputations are used
+to complete the predictors prior to imputation of the target column.
+
+A separate univariate imputation model can be specified for each column.
+The default imputation method depends on the measurement level of the
+target column. In addition to these, several other methods are provided.
+You can also write their own imputation functions, and call these from
+within the algorithm.
+
+The data may contain categorical variables that are used in a
+regressions on other variables. The algorithm creates dummy variables
+for the categories of these variables, and imputes these from the
+corresponding categorical variable.
+
+By default, the method uses pmm, predictive mean matching (numeric data)
+logreg, logistic regression imputation (binary data, factor with 2
+levels) polyreg, polytomous regression imputation for unordered
+categorical data (factor \> 2 levels) polr, proportional odds model for
+(ordered, \> 2 levels)."
+
+So, for this data, predictive mean matching will be used: "brief
+description of how PMM works. Suppose there is a single variable x that
+has some cases with missing data, and a set of variables z (with no
+missing data) that are used to impute x. Do the following:
+
+-   For cases with no missing data, estimate a linear regression of x on
+    z, producing a set of coefficients b.
+-   Make a random draw from the "posterior predictive distribution" of
+    b, producing a new set of coefficients b*. Typically this would be a
+    random draw from a multivariate normal distribution with mean b and
+    the estimated covariance matrix of b (with an additional random draw
+    for the residual variance). This step is necessary to produce
+    sufficient variability in the imputed values, and is common to all
+    "proper" methods for multiple imputation.*
+-   *Using b*, generate predicted values for x for all cases, both those
+    with data missing on x and those with data present.
+-   For each case with missing x, identify a set of cases with observed
+    x whose predicted values are close to the predicted value for the
+    case with missing data.
+-   From among those close cases, randomly choose one and assign its
+    observed value to substitute for the missing value.
+-   Repeat steps 2 through 5 for each completed data set."
+
+(source: <https://statisticalhorizons.com/predictive-mean-matching/>)
+
+```{r}
+md.pattern(pss_18)
+md.pattern(pss_36)
+
+#Impute with predictive mean matching:
+set.seed(1)
+pss_18_imp = complete(mice(pss_18, m = 1, maxit = 50, print = FALSE))
+pss_36_imp = complete(mice(pss_36, m = 1, maxit = 50, print = FALSE))
+
+```
+
+#### Compute the summarized score
+
+```{r}
+pss_18_summed = pss_18_imp %>% 
+  rownames_to_column(var = "SubjectID") %>% 
+#*Part of the script removed to protect the encoded name of the variables*
+  rowwise() %>% #This deletes the rownames, which is why I did the above operation
+  mutate(PSS_summed_score = sum(across(starts_with("P")))) %>% 
+  column_to_rownames(var = "SubjectID") %>% 
+  select(PSS_summed_score)
+
+
+pss_36_summed = pss_36_imp %>% 
+  rownames_to_column(var = "SubjectID") %>% 
+#*Part of the script removed to protect the encoded name of the variables*
+  rowwise() %>% #This deletes the rownames, which is why I did the above operation
+  mutate(PSS_summed_score = sum(across(starts_with("P")))) %>% 
+  column_to_rownames(var = "SubjectID") %>% 
+  select(PSS_summed_score)
+
+```
+
+#### Harmonize 36 and 18 weeks scores
+
+```{r}
+#Check the correlation 
+
+both_scores = inner_join(pss_36_summed %>% 
+             rename("PSS_ss_36" = "PSS_summed_score") %>% 
+       rownames_to_column(var = "SubjectID"), 
+     pss_18_summed %>% 
+       rename("PSS_ss_18" = "PSS_summed_score") %>% 
+       rownames_to_column(var = "SubjectID"),
+     by = "SubjectID"
+     ) 
+
+both_scores %>% 
+  ggplot(aes(x = PSS_ss_36, y = PSS_ss_18)) + 
+  geom_point(alpha = 0.3)+ 
+  geom_smooth(method = "lm")+ 
+  geom_abline(linetype = "dashed") +
+  cowplot::theme_cowplot() +
+  labs(caption = str_glue("r = ",
+                          round(cor(both_scores$PSS_ss_36, both_scores$PSS_ss_18),
+                                2))) +
+  ggtitle("PSscore")
+
+
+```
+
+when looking at the
+scatter plot that connects individuals between both weeks, we can see
+that most of them maintain a similar PSS level in both time points.
+Then, I can conclude that the result obtained in the 18 weeks
+questionnaire is very likely to be similar to the one at 36 weeks.
+
+#### Create the final object
+
+Based on the mentioned above, I will use the mean of both scores for
+each individual as the pre-pregnancy PSS. For individuals that only have
+one answered timepoint, I will use that one to represent the pregnancy
+period.
+
+```{r}
+pss_final = full_join(pss_36_summed %>% 
+             rename("PSS_ss_36" = "PSS_summed_score") %>% 
+       rownames_to_column(var = "SubjectNumber"), 
+     pss_18_summed %>% 
+       rename("PSS_ss_18" = "PSS_summed_score") %>% 
+       rownames_to_column(var = "SubjectNumber"),
+     by = "SubjectNumber"
+     ) %>% 
+  pivot_longer(-SubjectNumber, names_to = "weeks", values_to = "pss_score") %>% 
+  group_by(SubjectNumber) %>% 
+  summarise(PSscore = mean(pss_score, na.rm = TRUE))
+```
+
+### CES-D score
+
+#### Remove samples with high number of NAs (skipped questions)
+
+```{r}
+#### CES-D 18 wk ####
+ces_d_18 = summarized_scores_items[summarized_scores$status_18 == "Completed", 11:30]
+#Remove individual X, which has 27/30 items missing 
+removed = apply(X = ces_d_18, MARGIN = 1, function(x) sum(is.na(x)))
+removed[which(removed > 0)]
+#Remove 1 sample with 20 missing questions
+ces_d_18 = ces_d_18[rownames(ces_d_18) != "X",]
+
+#### PSS 36 wk ####
+ces_d_36 = summarized_scores_items[summarized_scores$status_36 == "Completed", 42:61]
+#No individuals need to be removed here because all of them have a low number of skipped questions (NAs)
+removed = apply(X = ces_d_36, MARGIN = 1, function(x) sum(is.na(x)))
+removed[which(removed > 0)]
+
+ggarrange(plot_missing(ces_d_18) ,plot_missing(ces_d_36))
+```
+
+#### Impute missing values (i.e., skipped items)
+
+For imputation, I will use the mice R package. For more information
+about this, check the imputation section of the PSS part above.
+
+```{r}
+md.pattern(ces_d_18)
+md.pattern(ces_d_36)
+#Impute with predictive mean matching:
+set.seed(1)
+ces_d_18_imp = complete(mice(ces_d_18, m = 1,maxit = 50, print = FALSE ))
+set.seed(1)
+ces_d_36_imp = complete(mice(ces_d_36, m = 1, maxit = 50, print = FALSE))
+```
+
+#### Compute the summarized score
+
+Items 4, 8, 12 and 16 need to be reverse scored. 
+
+```{r}
+ces_d_18_summed = ces_d_18_imp %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  rownames_to_column(var = "SubjectNumber") %>% 
+  rowwise() %>% #This deletes the rownames, which is why I did the above operation
+  mutate(ces_d_summed_score = sum(across(starts_with("P")))) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  select(ces_d_summed_score)
+
+ces_d_36_summed = ces_d_36_imp %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  rownames_to_column(var = "SubjectNumber") %>% 
+  rowwise() %>% #This deletes the rownames, which is why I did the above operation
+  mutate(ces_d_summed_score = sum(across(starts_with("P")))) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  select(ces_d_summed_score)
+
+```
+
+#### Harmonize 36 and 18 weeks scores
+
+```{r}
+#Check the correlation 
+
+both_scores = inner_join(ces_d_36_summed %>% 
+             rename("ces_d_ss_36" = "ces_d_summed_score") %>% 
+       rownames_to_column(var = "SubjectID"), 
+     ces_d_18_summed %>% 
+       rename("ces_d_ss_18" = "ces_d_summed_score") %>% 
+       rownames_to_column(var = "SubjectID"),
+     by = "SubjectID"
+     ) 
+
+```
+
+when looking at the scatter plot that connects individuals between both
+weeks, we can see that most of them maintain a similar CES-D level in
+both time points. Then, I can conclude that the result obtained in the
+18 weeks questionnaire is very likely to be similar to the one at 36
+weeks.
+
+#### Create the final object
+
+Based on the mentioned above, I will use the mean of both scores for
+each individual as the pre-pregnancy CES-D score. For individuals that
+only have one answered time point, I will use that one to represent the
+pregnancy period.
+
+```{r}
+ces_d_final = full_join(ces_d_36_summed %>% 
+             rename("ces_d_ss_36" = "ces_d_summed_score") %>% 
+       rownames_to_column(var = "SubjectNumber"), 
+     ces_d_18_summed %>% 
+       rename("ces_d_ss_18" = "ces_d_summed_score") %>% 
+       rownames_to_column(var = "SubjectNumber"),
+     by = "SubjectNumber"
+     ) %>% 
+  pivot_longer(-SubjectNumber, names_to = "weeks", values_to = "ces_d_score") %>% 
+  group_by(SubjectNumber) %>% 
+  summarise(CES_Dscore = mean(ces_d_score, na.rm = TRUE))
+```
+
+### Final PSS and CES-D object
+
+```{r}
+maternal_psycho = full_join(pss_final,
+                              ces_d_final,
+                              by = "SubjectNumber") %>%
+  full_join(prnms18w_raw %>%
+              select(SubjectNumber),
+            by = "SubjectNumber") %>%
+  mutate(SubjectNumber = as.character(SubjectNumber))
+```
+
+At the end, we have 7/828 individuals without CES-D or PSS information
+
+## Chronic Stress Response
+
+The chronic stress questionnaire is based on a 51 item inventory
+developed by Wheaton in 1991 and 1994. Wheaton and collaborators have a
+lot of work related to conceptualize chronic stress and how to measure
+it. For what I've read, this is the most comprehensive questionnaire to
+measure stress, and more recent papers adapt/reduce their inventory so
+that the terms are relevant or up to date (such as this one
+<https://europepmc.org/article/pmc/2583128#S6>). The first paper to use
+it in the scientific context is this one: Turner, R. J., Wheaton, B., &
+Lloyd, D. A. (1995). The epidemiology of social stress. American
+Sociological Review, 60(1), 104-125
+
+I checked the questions and most of them are in the CHILD questionnaire.
+They measure stress in the following dimensions (this is not specified
+in CHILD but it's based on the other papers I've read): General, work,
+unemployment, relationships, child care, social life, and health.
+
+The items are all forward scored and go from 1 to 3 (not true, somewhat
+true, true) Some of the original papers do a simple sum of the items.
+The problem with the scoring is that there are some questions that only
+apply to specific "roles" (i.e., if they have kinds, the minimum score
+they can have in that dimension is 7, since there are 7 child
+care-related questions and the minimum they can have per question is 1).
+So, people that are not from those roles (have kids, are in a
+relationship, are employed) wont have anything in those subscales, so
+doing a sum will make no sense.
+
+I found this resource
+(<https://www.phenxtoolkit.org/protocols/view/181301>) that uses a very
+similar questionnaire that is also based in the 51-item one we have for
+child. For scoring it says the following, which touches in what I was
+thinking about the roles:
+
+> The 51-item scale may be broken down into 13 subscales as shown in the
+> table below. For each item, a response of not true = 0, somewhat true
+> = 1, and very true = 2. Calculate the score from each individual
+> subscale. Of the two methods to obtain an overall score, the first is
+> to add up all very trues or very trues and somewhat trues. However, if
+> a person does not have a particular role (e.g., parent), then the
+> question is scored with a zero (see subscale table for universal vs.
+> role-specific designations). The other method is to code the items as
+> missing if a respondent is not in the role and therefore was not asked
+> these questions, and then take the average of all subscales. The
+> scores cannot simply be added up because the total is confounded by
+> the number of roles the person is in and that is a proxy for social
+> competence, therefore cutting across the point of the scale.
+
+I've read papers that do counts, do standardize scores per subdimension
+or the dichotomization (0 for not true/not applicable and 1 for somewhat
+true and true). So all of those scores seem to be ok or at least have
+been used. The dimensions that we have are not equal in terms of items
+(general= 5, work = 5, unemployment = 2, relationships = 10, child care
+= 7, social life = 3, health = 5), and we also don't have all the
+dimensions that were proposed in the original questionnaire. So I will
+lean more towards the standardization per category and then do an
+average across all of the dimensions (setting as missing the questions
+corresponding to roles that a person is not in). Because I feel like
+dichotomization would lead to the total score being biased towards the
+dimensions with more items (e.g. relationships/child care).
+
+**Scoring**
+
+Since the dimensions that we have are not equal in terms of items,
+suming up the items would lead to scores that are biased towards stress
+of specific roles (e.g. stress in relationships, which has 10 items that
+would not apply for single people). Then, in order to have a score that
+equally weights the different dimensions involved in chronic stress, I
+decided to split the questionnaire into the proposed dimensions
+(general, employment, unemployment, relationships, child care, social
+life and health), standardize them, and getting an average of those as a
+final score. For individuals that do not fit in a role (e.g.
+employement, in a relationship, had children at the time the
+questionnaire was administered, etc.), the dimension was set as missing
+(i.e. NA) and not taken into account for the average. This approach is
+suggested as one of the options for scoring in the resource above.
+
+### Remove samples with high number of NAs
+
+```{r}
+# Load data
+csr_raw <- read.csv("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  filter(CHILD.107814 != 8888) %>% #Remove individuals that skipped the whole questionnaire
+  column_to_rownames(var = "SubjectNumber")
+```
+
+Since, for this questionnaire, I have to divide it into dimensions that
+might be role-specific, and then compute a standardize sum, I will
+follow the following method:
+
+for each dimension:
+
+1 - subset the dataset to the questions and people that fit into the
+role
+
+2 - remove individuals with \>30 missing data and items with \>15% of
+NAs
+
+3- Impute missing items in the rest of NAs
+
+4- sum score
+
+5- standardize
+
+6- Join with the other dimensions
+
+average dimensions
+
+I won't know which NAs are because the person didn't answer that
+questionnaire or because they dont have stress in that area of their
+lives (i.e., dont fit that role), though.
+
+(general= 5, work = 5, unemployment = 2, relationships = 10, child care
+= 7, social life = 3, health = 5)
+
+```{r}
+#Check number of skipped items
+csr_raw = csr_raw %>% 
+  mutate(across(starts_with("CHILD"), ~ case_when( .x %in% c(999, 888) ~ NA_real_,
+                                           TRUE ~ .x)))
+
+#Check how many complete cases we have
+nrow(drop_na(csr_raw)) # 0 
+
+csr_dimensions = list(
+  #*Part of the script removed to protect the encoded name of the variables*
+)
+
+
+#Explore number of NAs
+plot_missing(csr_dimensions$general) #Not a lot of missingness
+plot_missing(csr_dimensions$employment) #Not a lot of missingness
+plot_missing(csr_dimensions$unemployment)  
+plot_missing(csr_dimensions$relationship)
+# a lot of missingness in 60 - You have lots of conflict with your ex., 57 - You find it is too difficult to find someone who is compatible with you, and 55 - You wonder if you will ever get married. I will remove them 
+
+#*Part of the script removed to protect the encoded name of the variables*
+
+plot_missing(csr_dimensions$child_care)
+# a lot of missing data in 63 - You don't see your kids from a former marriage as much as you'd like. Will remove it
+
+#*Part of the script removed to protect the encoded name of the variables*
+
+plot_missing(csr_dimensions$social_life)
+plot_missing(csr_dimensions$health)
+```
+
+From this section, we can observe that most individuals per dimension
+answered most of the items (if they were positive for the corresponding
+role) Role-specific dimensions are employment, unemployment,
+relationship and child care. Some of the questions were highly missing
+in each dimension, and they were removed. They are most likely missing
+because they are not applicable.
+
+### Impute missing items and scale them
+
+```{r}
+impute = function(df){
+  #Check number of skipped items in the questionnaire
+  skipped_items = apply(df, 1, function(x) sum(is.na(x)))
+  #Remove individuals with >40% of items skipped
+  df = df %>% 
+    filter(!row.names(.) %in% names(skipped_items[which(skipped_items > ncol(df)*0.4)]))
+  #impute missing items and 
+  df = complete(mice(df, m = 1, maxit = 50, print = FALSE)) %>% 
+    transmute(score = apply(.,1,sum)) %>% 
+    mutate(score = scale(score)) %>% 
+    rownames_to_column(var = "SubjectNumber")
+}
+
+csr_dimensions_imp = lapply(csr_dimensions, impute) %>% 
+  reduce(left_join, by = "SubjectNumber")
+
+colnames(csr_dimensions_imp) = c("SubjectNumber", names(csr_dimensions))
+```
+
+### Compute total score
+
+```{r}
+csr_dimensions_imp_score = csr_dimensions_imp %>% 
+  rowwise() %>% 
+  mutate(average_csr = mean(c(general, employment, unemployment, relationship, child_care, social_life, health),
+                            na.rm = TRUE)) %>% 
+  select(SubjectNumber, average_csr)
+
+hist(csr_dimensions_imp_score$average_csr)
+```
+
+### Append total score
+
+```{r}
+maternal_psycho = left_join(maternal_psycho,
+                            csr_dimensions_imp_score,
+                            by = "SubjectNumber")
+hist(maternal_psycho$average_csr) # distribution is the same as the one observed in the whole dataset
+```
+
+## Dyadic Adjustment Scale
+
+The Dyadic Adjustment Scale (DAS) is one of the most widely used and
+validated standardized questionnaires in psychological research to
+determine the severity of problems in traditional couples. Its use is
+diverse and can be used as for classification purposes to classify
+distressed and non-distressed couples. [Sabourin et al.,
+2005](https://www.researchgate.net/publication/7966093_Development_and_Validation_of_a_Brief_Version_of_the_Dyadic_Adjustment_Scale_With_a_Nonparametric_Item_Analysis_Model).
+
+The [original questionnaire](https://www.jstor.org/stable/350547) is a
+32-item scale, which can impose some restrictions to its use because of
+its length. In CHILD, a shortened version of this was used: the
+[DAS-10](https://psycnet.apa.org/record/1993-07960-001). This
+questionnaire selected the most relevant items relying on multiple
+regression analyses and discriminant analyses to determine which scale
+of the DAS better predicts relationship quality and outcomes (Kurdek,
+1992). The DAS-10 questionnaire is composed of items from the
+Satisfaction subscale of the DAS (items 16 to 23 and Items 31 and 32).
+Higher scores indicate a more positive dyadic adjustment and a lower
+level of distress. Kurdek found that "Satisfaction score alone is the
+most psychometrically solid of all DAS scores and could be used alone
+with little loss of information", which is the reason of why the DAS-10
+is used. More information about quick facts can be checked
+[here](https://www.eif.org.uk/resource/measuring-parental-conflict-and-its-impact-on-child-outcomes).
+
+**Scoring**
+
+[Qualtrics scoring of
+DAS-32](https://arc.psych.wisc.edu/self-report/dyadic-adjustment-scale-das/):
+Reverse scoring as indicated below. Items 1-15, 18-19, 25-28, & 32 are
+forward scored 1-6 ; Items 23-24 are forward scored 1-5; Item 31 is
+forward scored 1-7.
+
+This means that for DAS-10, items 1-2, 5-7 and 9 are reverse-scored.
+Items 1-7 and 10 are scored 0-5, item 8 is 0-4 and item 9 is 0-6. The
+maximum score is 50.
+
+### Remove samples with high number of NAs
+
+```{r}
+# Load data
+das_10_raw <- read.csv("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  # Set 999 (no response to this question) to NA
+  mutate(across(starts_with("CHILD"), ~ case_when( .x == 999 ~ NA_real_,
+                                           TRUE ~ .x))) %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+#Check number of skipped items
+skipped_items_das = apply(das_10_raw, 1, function(x) sum(is.na(x)))
+(skipped_items_das = skipped_items_das[which(skipped_items_das != 0)]) #See how many individuals have skipped items and how many
+
+#Remove individuals with >30% of items skipped
+das_10_raw = das_10_raw %>% 
+  filter(!row.names(.) %in% names(skipped_items_das[which(skipped_items_das > 3)]))
+
+#Explore number of NAs
+plot_missing(das_10_raw)
+
+#Explore the number of NAs in samples with DNA methylation 
+skipped_meth = apply(das_10_raw[maternal_psycho$SubjectNumber,], 1, function(x) sum(is.na(x)))
+skipped_meth[which(skipped_meth > 0)] # 10 skipped questions means that individuals with DNAme data skipped the questionnaire 
+```
+
+From this section, we can observe that 40 individuals for whom we have
+DNAme data skipped the DAS questionnaire. 6 of them skipped 1 or 2
+questions; those individuals will have those items imputed and their
+DAS-score calculated.
+
+### Impute missing items
+
+```{r}
+md.pattern(das_10_raw)
+#Impute with predictive mean matching:
+set.seed(1)
+das_10_imp = complete(mice(das_10_raw, m = 1, maxit = 50, print = FALSE))
+```
+
+### Compute total score
+
+items 1-2, 5-7 and 9 are reverse-scored. Items 1-7 and 10 are scored
+0-5, item 8 is 1-4 and item 9 is 1-6. The maximum score is 50.
+
+```{r}
+colnames(das_10_imp) = paste("Q", 1:10, sep ="")
+
+das_10_score = das_10_imp %>% 
+  mutate(across(c(1,2,5,6,7), function(x) abs(x-5)),
+         Q9 = abs(Q9 - 6) ) %>% #Reverse score items 1,2,5,6,7 and 9
+  transmute(das_10_score = apply(., 1, sum)) # Sum the items
+
+hist(das_10_score$das_10_score)
+```
+
+### Append total score
+
+```{r}
+maternal_psycho = left_join(maternal_psycho,
+                            das_10_score %>% 
+                              rownames_to_column(var = "SubjectNumber"),
+                            by = "SubjectNumber")
+hist(maternal_psycho$das_10_score) # distribution is the same as the one observed in the whole dataset
+```
+
+## Interpersonal Support Evaluation
+
+This list is a shortened version (12 items) of the ISEL (Interpersonal
+Support Evaluation List). [This
+resource](https://www.slu.edu/medicine/family-medicine/pdfs/interpersonal-support-eval.pdf)
+provides a good description of the questionnaire and how to score it:
+
+A 12-item measure of perceptions of social support. This measure is a
+shortened version of the original ISEL (40 items; Cohen & Hoberman,
+1983). This questionnaire has three different subscales designed to
+measure three dimensions of perceived social support. These dimensions
+are:
+
+1.) Appraisal Support
+
+2.) Belonging Support
+
+3.) Tangible Support
+
+Each dimension is measured by 4 items on a 4-point scale ranging from
+"Definitely True" to "Definitely False".
+
+Reference:
+
+Cohen S., Mermelstein R., Kamarck T., & Hoberman, H.M. (1985). Measuring
+the functional components of social support. In Sarason, I.G. & Sarason,
+B.R. (Eds), Social support: theory, research, and applications. The
+Hague, Netherlands: Martinus Niijhoff.
+
+Scoring:
+
+-   Items 1, 2, 7, 8, 11, 12 are reverse scored.
+
+-   Items 2, 4, 6, 11 make up the Appraisal Support subscale Items 1, 5,
+    7, 9 make up the Belonging Support subscale
+
+-   Items, 3, 8, 10, 12 make up the Tangible Support subscale.
+
+All scores are kept continuous.
+
+This short version has shown to have a [good consistency in different
+populations](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4048059/#R22)
+
+### Remove samples with a high number of NAs
+
+```{r}
+# Load data
+isel_12_raw <- read.csv("data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  # Set 999 (no response to this question) to NA
+  mutate(across(starts_with("CHILD"), ~ case_when( .x == 999 ~ NA_real_,
+                                           TRUE ~ .x))) %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+#Explore number of NAs
+plot_missing(isel_12_raw) #No variables wiht > 30% of missing data 
+skipped = apply(isel_12_raw, 1, function(x) sum(is.na(x)))
+skipped[which(skipped > 0)]
+#No individuals with more than 30% of items skipped
+
+#Explore the number of NAs in samples withh DNA methylation 
+skipped_meth = apply(isel_12_raw[maternal_psycho$SubjectNumber,], 1, function(x) sum(is.na(x)))
+skipped_meth[which(skipped_meth > 0)] #12 skipped questions means that individuals with DNAme data skipped the questionnaire 
+```
+
+From this part, we can highlight that:
+
+-   A low number of the individuals in the study skipped 1 question of
+    the questionnaire; a few of them skipped 2.
+
+-   30 individuals from the DNAme data set skipped the whole ISEL-12
+    questionnaire. 11 individuals answered the questionnaire and skipped
+    1 question. 787 individuals answered fully the questionnaire
+
+### Impute missing questions
+
+To conduct the single imputation, I will use pmm, which is a method that
+I described above in the PSS section. I will impute the missing items
+using the whole CHILd data set (i.e., not only the individuals for who
+we have DNAme data), since using a higher number of samples can lead to
+a better imputation that is not biased with underlying patterns existing
+in the DNAme samples.
+
+```{r}
+set.seed(1)
+isel_12_imp = complete(mice(isel_12_raw, m = 1, print = FALSE, maxit = 50))
+
+## check if the data is MCAR or MAR
+mcar(x = isel_12_raw,
+     imputed = mice(isel_12_raw, print=FALSE),
+     min_n = 3)
+
+```
+
+### Compute the total scale score
+
+Items 1, 2, 7, 8, 11, 12 are reverse scored.
+
+```{r}
+colnames(isel_12_imp) = c(1:12) 
+
+isel_12_score = isel_12_imp %>% 
+  mutate(across(c(1,2,7,8,11,12), function(x) abs(x-5))) %>% #Reverse score items 1,2,7,8,11 and 12
+  transmute(isel_12_score = apply(., 1, sum)) # Sum the items
+
+# Check the distribution of the scores in the cohort
+hist(isel_12_score$isel_12_score)
+```
+
+### Append total scale score
+
+```{r}
+maternal_psycho = left_join(maternal_psycho,
+                            isel_12_score %>% 
+                              rownames_to_column(var = "SubjectNumber"),
+                            by = "SubjectNumber")
+hist(maternal_psycho$isel_12_score) # distribution is the same as the one observed in the whole dataset
+```
+
+## Recent Life Events
+
+This questionnaire is based on the one published in The epidemiology of
+social stress by Turner, R. J., Wheaton, B., & Lloyd, D. A. (1995)
+(<https://www.jstor.org/stable/2096348>). It consists of a negative
+events checklist that have happened to the respondent or a close person
+to them **in the last 12 months**. Questions include items such as "Was
+there a serious accident or injury?", "Was there a serious illness?",
+"Did a child die?", etc. There are in total 32 events. The first 23
+items ask whether the event has happened to the the respondent or a
+close person (in separate items), and the last 9 items ask only about
+that event in the respondent's life.
+
+**Scoring**
+
+"Each life event index is a simple count from the number of positive
+responses to the following 34 items. Events to self indicate events that
+occurred to the respondent during the preceding 12 months. Events to
+others are the number from subsets of these events that occurred to the
+respondent's spouse or partner, children, and relatives or close
+friends." (Turner et al., 1995, p. 120)
+
+In most of the questionnaires in previous literature, there's no
+separation between direct and indirect events (i.e., the questions are
+"Have you or any close person experienced X?". In the CHILD
+questionnaire, each event is separated into 2 items so you can respond
+if that happened to you in one item, and then another if it happened to
+a close person in a separate item.
+
+Since we have the resolution in this questionnaire to know if that
+happened to the respondent or a close person, I decided to downweight
+the event if it happened to a close person but not to the respondent (0
+= did not happen, 0.5 = happened to a close person and not to the
+respondent, 1 = happened to the respondent). This is based on events
+happening to a close person being not as stressful as when they happen
+directly to the respondent.
+
+### Remove samples with high number of NAs
+
+```{r}
+# Load data
+rle_raw <- read.csv("Data.csv") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  #*Part of the script removed to protect the encoded name of the variables*
+  # Set 999 (no response to this question) to NA
+  mutate(across(starts_with("CHILD"), ~ case_when( .x %in% c(888, 999) ~ NA_real_,
+                                           TRUE ~ .x))) %>% 
+  column_to_rownames(var = "SubjectNumber") %>% 
+  select(-c(paste("X", seq(792, 954, 3), sep = ""))) # Remove the "How many days did this have a significant impact on YOU?" questions in each event.
+
+#Check number of skipped items
+skipped_items_rle = apply(rle_raw, 1, function(x) sum(is.na(x)))
+(skipped_items_rle = skipped_items_rle[which(skipped_items_rle != 0)]) #See how many individuals have skipped items and how many
+
+#Remove individuals with >30% of items skipped
+rle_raw = rle_raw %>% 
+  filter(!row.names(.) %in% names(skipped_items_rle[which(skipped_items_rle > ncol(rle_raw)*0.3)]))
+
+#Explore number of NAs
+plot_missing(rle_raw)
+#Not a lot of missingness
+
+#Explore the number of NAs in samples withh DNA methylation 
+skipped_meth = apply(rle_raw[maternal_psycho$SubjectNumber,], 1, function(x) sum(is.na(x)))
+skipped_meth[which(skipped_meth > 0)] # 55 skipped questions means that individuals with DNAme data skipped the questionnaire 
+```
+
+From this section, we can observe that 25 individuals for whom we have
+DNAme data skipped the DAS questionnaire. 11 of them skipped a few
+questions (1-8).For this questionnaire I will not conduct imputation
+since I consider that the occurrence of major events are independent
+between them.
+
+### Impute missing questions
+
+To conduct the single imputation, I will use pmm, which is a method that
+I described above in the PSS section. I will impute the missing items
+using the whole CHILd data set (i.e., not only the individuals for who
+we have DNAme data), since using a higher number of samples can lead to
+a better imputation that is not biased with underlying patterns existing
+in the DNAme samples.
+
+```{r}
+set.seed(1)
+rle_imp = complete(mice(rle_raw, m = 1, print = FALSE, maxit = 50))
+max(rle_imp)
+min(rle_imp)
+#checking max is 1 and min is 0
+```
+
+### Compute total score
+
+The traditional way of scoring this questionnaire is summing the events
+that happened to the respondent or a close person to them. However,
+since we have the resolution here to know if each event happened to the
+respondent or a close person, each event will be 0 when it did not
+happen to the respondent OR a close person, 0.5 when it did not happen
+to the respondent but it happened to a close person, and 1 when it
+happened to the respondent (in this case, whether it happened to a close
+person or not is not considered and does not sum anything to the score)
+Then, the maximum score is 34.
+
+```{r}
+#Create the function to score events that have separated items about that event happening to the respondent or to a close person 
+score_pair_rle = function(df, question_number){ #The df is a data frame with two columns; the first one is whether the event happened to the person and the second one is if it happened to a close person 
+  colnames(df) = c("respondent", "close_person")
+  colname = paste("event", question_number, sep = "")
+  df = df %>% 
+    transmute( {{colname}} := case_when(
+      respondent == 1 ~ 1,
+      respondent == 0 & close_person == 1 ~ 0.5,
+      respondent == 0 & close_person == 0 ~ 0
+      ))
+  return(df)
+}
+
+rle_score = data.frame(row.names = row.names(rle_imp))
+for(item in seq(1,46,2)){
+  df = rle_imp[,item:(item+1)]
+  question_score = score_pair_rle(df, item)
+  rle_score = cbind(rle_score, question_score)
+}
+
+rle_score = cbind(rle_score, rle_imp[,47:55]) # Add items where the event is only asked for the respondent
+
+#Get the final score
+rle_score = rle_score %>% 
+  transmute(rle_score = apply(., 1, sum))
+
+hist(rle_score$rle_score)
+```
+
+### Append total score
+
+```{r}
+maternal_psycho = left_join(maternal_psycho,
+                            rle_score %>% 
+                              rownames_to_column(var = "SubjectNumber"),
+                            by = "SubjectNumber")
+hist(maternal_psycho$rle_score) # distribution is the same as the one observed in the whole dataset
+```
+
+## Compute Internal validity
+
+### Compute PSS and CES-D chronbach alpha
+
+```{r}
+library(psych)
+summary(psych::alpha(ces_d_18_imp, keys = c( "PRNS18WQ14", "PRNS18WQ18", "PRNS18WQ22", "PRNS18WQ26" ))) #raw 0.87
+summary(psych::alpha(ces_d_36_imp, keys = c( "PRNS36WQ14", "PRNS36WQ18", "PRNS36WQ22", "PRNS36WQ26" ))) #raw 0.86
+summary(psych::alpha(pss_18_imp, keys = c( "PRNS18WQ4", "PRNS18WQ5", "PRNS18WQ7", "PRNS18WQ8" )))
+summary(psych::alpha(pss_36_imp, keys = c( "PRNS36WQ4", "PRNS36WQ5", "PRNS36WQ7", "PRNS36WQ8" )))
+summary(psych::alpha(das_10_imp, keys = c("Q1", "Q2", "Q5", "Q6", "Q7", "Q9"))) #0.72 standardized alpha
+summary(psych::alpha(isel_12_imp, keys = c("1", "2", "7", "8", "11", "12"))) #0.84 raw
+summary(psych::alpha(rle_imp)) # raw 0.66
+```
+
+```{r}
+#csr
+summary(psych::alpha(csr_dimensions$general))# raw 
+summary(psych::alpha(csr_dimensions$employment)) # raw 
+summary(psych::alpha(csr_dimensions$unemployment)) # raw 
+summary(psych::alpha(csr_dimensions$relationship)) # raw 
+summary(psych::alpha(csr_dimensions$child_care)) # raw 
+summary(psych::alpha(csr_dimensions$social_life)) # raw 
+summary(psych::alpha(csr_dimensions$health)) # raw 
+# Get an alpha of the whole questionnaire
+x = csr_raw
+  #*Part of the script removed to protect the encoded name of the variables*
+summary(psych::alpha(x %>% 
+                       select(-c( X, Y  ))))
+```
+
+
+# Parental Socioeconomic Status
+
+From [Diemer et
+al.,2012](https://spssi.onlinelibrary.wiley.com/doi/abs/10.1111/asap.12001)
+:
+
+> We define social class as denoting power, prestige, and control over
+> resources and focus on the two most prominent ways that psychologists
+> have conceptualized and measured aspects of social class. The first
+> approach, socioeconomic status (SES), indexes one's position within a
+> power hierarchy via relatively objective indicators of power,
+> prestige, and control over resources, such as income, wealth,
+> education level, and occupational prestige.
+
+> Indicators of SES generally cluster around two domains---prestige and
+> resources. Prestige-based assessments capture social stratification
+> and an individual's relative social-political-economic standing, and
+> are typically measured using occupational prestige. Resource-based
+> measures include income, wealth, and educational credentials, as well
+> as the lack of such resources **Occupational prestige, educational
+> attainment, and income can be considered the "triumvirate" of SES
+> indicators and are extensively used in social science research.**
+
+> In addition to these individual SES indicators, psychologists also use
+> composite SES measures, such as the Hollingshead Four Factor Index of
+> Social Status, which is comprised of several SES indicators. However,
+> these composites are based on outdated classification systems and
+> obfuscate which SES components drive observed associations between
+> variables (Duncan & Magnuson, 2003; Oakes & Rossi, 2003). For example,
+> although a composite-SES measure may predict young people's
+> educational attainment, because each component is not examined
+> separately, it is impossible to gauge which SES component accounts for
+> variation in educational attainment. In addition, Callahan and Eyberg
+> (2010) found that a model containing separate indices of income,
+> education, and occupational prestige explained three times more
+> variance in observed parenting behavior than a model containing a SES
+> composite. Because individual SES indicators yield estimates of each
+> component's unique contribution, they are often more informative for
+> scholarship, policy, and intervention. **Scholars have therefore
+> argued against the use of composite SES indices and instead recommend
+> using individual indicators of SES** (APA Task Force on SES, 2007;
+> Duncan & Magnuson, 2003).
+
+Therefore, based on those recommendations, I will use separately the
+Socioeconomic Status metrics that we have available for CHILD. We have
+the following derived variables:
+
+-   Household income at prenatal 18 weeks in ranges - providing income
+    ranges to help recall accuracy, in order to overcome participants'
+    reluctance to disclose what is considered by many to be personal
+    information. Income was coded as:
+
+    -   1: \$0 - \$49,999
+
+    -   2: \$50,000 - \$99,999
+
+    -   3: \$100,000 - \$149,999
+
+    -   4: \> \$150,000
+
+    -   5: Prefer not say / skipped
+
+        When it is appropriate for the research question and if the only
+        purpose is to show demographic distribution, one may substitute
+        the information obtained during baseline with information
+        provided at a later time. For example, if a mother did not have
+        information (or prefer not to disclose) on her income at
+        prenatal 18 weeks, the information on income at 1 year can be
+        used.
+
+-   Maternal education at prenatal 18 weeks
+
+-   Paternal education at prenatal 18 weeks
+
+    Education level is coded as:
+
+    -   1: Secondary graduation or less (includes \"Less than high
+        school\", \"Some high school\" and \"Completed high school\")
+
+    -   2: Some post-secondary (includes \"Some university\", \"Some
+        college\")
+
+    -   3: Post-secondary graduation (includes \"Completed college\",
+        \"Completed university\")
+
+    -   4: Higher than post-secondary (\"Masters degree\", \"PhD\")
+
+    -   All \"Other\" responses had been recoded into the appropriate
+        categories.
+
+Since we have both paternal and maternal education, I will use them separately since there are some studies (https://bmcpublichealth.biomedcentral.com/articles/10.1186/1471-2458-12-336, https://www.frontiersin.org/articles/10.3389/fpsyg.2017.01818/full, https://pubmed.ncbi.nlm.nih.gov/29439191/, https://onlinelibrary.wiley.com/doi/10.1111/j.1365-3016.1993.tb00417.x) that show different effects of maternal and paternal education on several outcomes. 
+
+Finally, I will create a composite SES score with the 3 variables and also have it as a possible environmental variable for LASSO to choose, following the recommendation of Dr. Nicole Gladish. 
+
+```{r}
+#Load data 
+SES_raw <- read_excel("Data") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  select(- c(mum_edu18wkP,income18wkP ,# Vanguard cohort data
+             dad_ed3y, mom_ed3y, income3y, mom_ed5y, dad_ed5y, income5y)) %>% # Irrelevant vars
+  mutate(across(c(income18wk, income1y), function(x) case_when(x == 5 ~ NA_real_ ,
+                                                               TRUE ~ x))) 
+plot_missing(SES_raw)
+```
+## Income 
+
+We can see that most data is missing from parents education at any point except 18 week prenatal. There is a small number of missing values at the 18 week prenatal for income. As mentioned in the documentation above, there is the option to substitute those NAs with the income level at year 1. I will see how many individuals have NA at 18 weeks prenatal and have information at 1 years old to evaluate that option. 
+
+```{r}
+sum(is.na(SES_raw$income18wk))
+sum(is.na(SES_raw$income18wk) & !is.na(SES_raw$income1y))
+
+# we can see that 94 indiviuals do not have income information at 18 weeks prenatal, and 57 of them have at 1 years old. I will check the correlation of income between 18 week prenatal and 1 year to see if it is reasonable to substutite the NAs of those people at 18 weeks prenatal with the income at 1 year. 
+
+SES_raw %>% 
+  ggplot(aes(x = income18wk, y = income1y))+
+  geom_jitter(alpha = 0.5, width = 0.2, height = 0.2)+
+  geom_smooth(method = "lm") +
+  cowplot::theme_cowplot()
+
+SES_raw %>% 
+  select(-c(SubjectNumber, StudyCenter)) %>% 
+  cor(use = "pairwise.complete.obs")
+```
+
+Even though the correlation is high (0.78), I will leave it as NA and potentially impute it later. This because not all of the samples at 18 week prenatal would have a value; i would still have some NAs. So, a future imputation might be required and I would prefer to use a single method in all of the individuals rather than using one for some and another one for others.
+
+## Create SES composite score 
+
+To create a composite score, I will do a PCA on the maternal education, parental education and income at 18 week prenatal. I will do it using singular value decomposition with scaling. 
+```{r}
+#Do the PCA
+ses_pca = prcomp(SES_raw %>% 
+                   column_to_rownames(var = "SubjectNumber") %>% 
+                   select(mom_ed18wk, dad_ed18wk, income18wk) %>% 
+                   drop_na(),
+                 scale. = TRUE, 
+                 center = TRUE)
+
+#Check the variance captured in each component
+fviz_eig(ses_pca)
+
+#See the loadings 
+ses_pca$rotation
+#PC2 seems to be more influenced by education and PC3 by income. PC1 by all of them 
+
+#Get the coordinates for the 1st component
+ses_composite = get_pca_ind(ses_pca)$coord %>% 
+  as.data.frame() %>% 
+  select(Dim.1) %>% 
+  dplyr::rename(ses_composite = Dim.1 ) %>% 
+  rownames_to_column(var = "SubjectNumber")
+```
+
+## Append SES scores to the dataset
+
+```{r}
+maternal_psycho = maternal_psycho %>% 
+  left_join(SES_raw %>% 
+              select(c(mom_ed18wk, dad_ed18wk, income18wk, SubjectNumber)),
+            by = "SubjectNumber") %>% 
+  left_join(ses_composite, by ="SubjectNumber" ) %>% 
+  column_to_rownames(var = "SubjectNumber")
+```
+
+
+# Final mother's psychosocial dataset
+
+```{r}
+maternal_psycho = full_join(pss_final,
+                              ces_d_final, 
+                              by = "SubjectNumber") %>%
+  full_join(prnms18w_raw %>% 
+              select(SubjectNumber),
+            by = "SubjectNumber") %>% 
+  mutate(SubjectNumber = as.character(SubjectNumber)) %>% 
+  left_join(csr_dimensions_imp_score,
+            by = "SubjectNumber") %>% 
+  left_join(das_10_score %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(isel_12_score %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(rle_score %>% 
+              rownames_to_column(var = "SubjectNumber"),
+            by = "SubjectNumber") %>% 
+  left_join(SES_raw %>% 
+              select(c(mom_ed18wk, dad_ed18wk, income18wk, SubjectNumber)),
+            by = "SubjectNumber") %>% 
+  left_join(ses_composite, by ="SubjectNumber" ) %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+## Check that they are coded correctly
+glimpse(maternal_psycho)
+head(maternal_psycho)
+dim(maternal_psycho)
+```
+For imputation of this dimension, I will use the same threshold for individuals with a high number of missing variables. I will remove individuals with > 30% of the variables missing. On the other hand, I will impute variables with < 15% missing data. 
+
+```{r}
+#Remove individuals with more than 30% of the variables missing 
+(threshold_filter = ncol(maternal_psycho)*0.3)
+maternal_psycho = maternal_psycho %>% 
+  filter(!(rowSums(is.na(.)) > threshold_filter))
+#Removed 9 individuals
+
+x = md.pattern(maternal_psycho, rotate.names = TRUE)
+plot_missing(maternal_psycho)
+#No variables have more than 15% of missing data
+
+```
+
+### Remove samples with low variability 
+
+```{r}
+plot_histogram(maternal_psycho)
+# No variables display a concerning lack of variability
+```
+
+
+### Imputation
+
+For this specific case, I will add income at 1 years old because it displays a very high correlation with the income at 18 weeks old. Then, including it will improve the imputation of said variable. 
+
+```{r}
+set.seed(1)
+
+maternal_psycho_imp =  maternal_psycho %>% 
+  rownames_to_column(var = "SubjectNumber" ) %>% 
+  left_join(SES_raw %>% 
+              select(c(income1y, SubjectNumber)),
+            by = "SubjectNumber") %>% 
+  column_to_rownames(var = "SubjectNumber")
+
+plot_correlation(maternal_psycho_imp, cor_args = list(use = "pairwise.complete.obs"))
+
+set.seed(1)
+x = mice(maternal_psycho_imp, m = 1, maxit = 50, print = FALSE)
+
+maternal_psycho_imp = complete(x) %>% 
+  select(-income1y) %>% 
+  rownames_to_column(var = "SubjectNumber")
+```
+
+Save final object
+
+```{r}
+write_csv(maternal_psycho %>% 
+            rownames_to_column(var = "SubjectNumber"), 
+          here("Objects/maternal_psychosocial.csv"))
+
+write_csv(maternal_psycho_imp, here("Objects/maternal_psychosocial_imp.csv")) 
+```
