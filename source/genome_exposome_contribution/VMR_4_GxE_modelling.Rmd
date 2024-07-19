@@ -1,0 +1,785 @@
+---
+title: "VMR 4 - G, E, G+E and GxE modelling"
+author: "Erick I. Navarro-Delgado"
+date: '2022-08-23'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    keep_md: true
+---
+
+# Modelling the source of VMR variation 
+
+This document details the modelling of the source of VMR variation (G, E, G+E or GxE) for the CHILD cohort using the RAMEN package. For more information about the methodology, please read the documentation.  
+
+```{r setup, message=FALSE, warning=FALSE}
+#Load packages
+library(data.table)
+library(tidyverse)
+library(RAMEN)
+library(future)
+library(cowplot)
+library(here)
+library(ggsignif)
+library(foreach)
+
+```
+
+## G/E modelling 
+
+```{r}
+
+selected_variables = fread("Objects/selectVariables_CHILD.csv", data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+summarized_methyl_VMR = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix()
+environmental_matrix = read.csv("Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix()
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 8))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+library(here)
+
+Sys.time()
+lmGE_res = RAMEN::lmGE(selected_variables = selected_variables,
+                       summarized_methyl_VMR = summarized_methyl_VMR,
+                       genotype_matrix = genotype_matrix,
+                       environmental_matrix = environmental_matrix,
+                       covariates = covariates,
+                       model_selection = "AIC")
+Sys.time()
+
+head(lmGE_res)
+data.table::fwrite(lmGE_res, here("Objects/lmGE_res.csv"))
+
+#8 workers took 2 hours for ~28,500 VMRs
+```
+
+
+## Explore results
+
+### Proportion of G, E, G+E and GxE models
+
+To discard the winning models that do not perform better than what we would observe by chance, I will compute a null distribution (more information in VMRs/post_hoc_analyses/winner_model_selection.Rmd)
+
+* The following script was ran on GPCC because of the time and resources it requires.
+
+```{r, eval=FALSE}
+## Model G and E contribution
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+library(foreach)
+library(relaimpo)
+
+#Load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+VMRs_df = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+summarized_methyl_VMR = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix() # imputed_genot_CHILD_gt_filtered
+
+environmental_matrix = read.csv("Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix() # prenatal_environment
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 10))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+permutated_results = RAMEN::nullDistGE(
+  VMRs_df = VMRs_df,
+  genotype_matrix = genotype_matrix,
+  environmental_matrix = environmental_matrix,
+  summarized_methyl_VMR = summarized_methyl_VMR,
+  permutations = 5,
+  covariates = covariates,
+  seed = 1,
+  model_selection = "AIC"
+)
+write.csv(permutated_results, "permutated_results_1.csv")
+
+permutated_results = RAMEN::nullDistGE(
+  VMRs_df = VMRs_df,
+  genotype_matrix = genotype_matrix,
+  environmental_matrix = environmental_matrix,
+  summarized_methyl_VMR = summarized_methyl_VMR,
+  permutations = 5,
+  covariates = covariates,
+  seed = 2,
+  model_selection = "AIC"
+)
+write.csv(permutated_results, "permutated_results_2.csv")
+```
+
+Now I will use the 95th percentile of the delta R squared distribution as threshold
+
+```{r}
+#Load lmGE results
+lmGE_res = data.table::fread(here("Objects/lmGE_res.csv"), data.table = FALSE) %>% 
+  mutate(variables = str_split(variables, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+  
+#Load null distribution
+permutated_datasets = rbind(
+  read.csv(here("VMRs/post_hoc_analyses/permutated_results_1.csv")),
+  read.csv(here("VMRs/post_hoc_analyses/permutated_results_2.csv")))
+
+#Establish thresholds
+(thresholds_dr2 = permutated_datasets %>% 
+  mutate(model_category = case_when(model_group %in% c("G", "E") ~ "marginal", 
+                                    model_group %in% c("G+E", "GxE") ~ "joint")) %>% 
+  group_by(model_category) %>% 
+  summarise(threshold = quantile(R2_difference, 0.95)))
+
+write_csv(thresholds_dr2, here("Objects/thresholds_null_dR2.csv"))
+
+#Filter out poor performing models
+lmGE_res_filtered = lmGE_res %>% 
+  mutate(R2_difference = tot_r_squared - basal_rsquared,
+         pass_R2threshold_permutation = case_when(model_group %in% c("G","E") ~ R2_difference > thresholds_dr2$threshold[2],
+                                    model_group %in% c("GxE","G+E") ~ R2_difference > thresholds_dr2$threshold[1])) 
+
+```
+
+
+```{r}
+## For generating the plots
+
+## Load the object 
+lmGE_res = lmGE_res_filtered #Object with a column of the VMRs that did not pass the R2 threshold of the null distribution (see VMRs/post_hoc_analyses/winner_model_selection.Rmd
+
+#See how many models passed the R2 threshold
+table(lmGE_res$pass_R2threshold_permutation)
+
+lmGE_res = lmGE_res %>% 
+  mutate(model_group = case_when(pass_R2threshold_permutation == FALSE ~ "NC", 
+                                 TRUE ~ model_group)) #Set as NC (non conclusive) VMRs which winning model did not pass the delta R2 threshold
+
+# Get the cis SNPs object to identify canonical and non canonical VMRs
+cis_snps = fread("/mnt/scratch/KoborLab/CHILD/enavarro/CHILD_birth/Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(VMR_index = as.character(VMR_index))  
+
+#merge both data sets and set models where we had no variables or whose winning model did not pass the delta R2 threshold as "NC"
+lmGE_annot = cis_snps %>% 
+  dplyr::select(VMR_index, n_VMPs, seqnames, start, end, width) %>% 
+  mutate(VMR_category = case_when(n_VMPs > 1 ~ "canonical",
+                                  TRUE ~ "non canonical")) |> 
+  left_join(lmGE_res, by = "VMR_index") %>% 
+  mutate(model_group = case_when(is.na(model_group) ~ "NC", #Set as NC VMRs that had no variables selected
+                                 TRUE ~ model_group))
+
+#See how many VMRs we have where the second best model was as good as the first one 
+lmGE_annot %>% 
+  filter(delta_aic == 0) %>% 
+  dplyr::select(model_group, second_winner) %>%
+  table()
+```
+
+In All of these models (120) G+E and GxE are exactly as good according to their AIC. This is a tiny proportion of the total VMRs (0.4%). Anyways, G+E are more parsimonious models compared to GxE. So, If they are both equally good, it is better to choose the simpler model. 
+
+Now I will also add the information of whether the winning models are default winners or not 
+
+```{r}
+lmGE_annot = lmGE_annot %>% 
+  mutate(winning_mode = case_when(is.na(AIC) ~ NA_character_, #Models that had no variables selected and therefore no models fitted are NA
+                                  is.na(delta_aic) ~ "Default winning",
+                                  TRUE ~ "Competition winning"))
+
+null_vars = which(lmGE_annot$variables %in% list(NULL))
+lmGE_annot[null_vars,"variables"] = NA
+
+fwrite(lmGE_annot, here("Objects/lmGE_res_annot_child.csv"), row.names = FALSE)
+
+```
+
+
+```{r}
+#### Plot proportion of models
+#Overall picture
+(plot_proportion_winningmodels = lmGE_annot %>% 
+  group_by(model_group) %>% 
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n)) %>% 
+  ggplot(aes(x = model_group,
+             y = n, 
+             fill = model_group, 
+             label = scales::percent(pct)))+
+  geom_col()+ 
+  geom_text(hjust = 0.35,
+            vjust = -0.1,
+            size = 5) + 
+  xlab("CHILD VMRs") +
+  labs(fill="Winning model")+
+  ylab("VMRs counts")+ 
+  cowplot::theme_cowplot()+
+  scale_fill_manual(values=c("E" = "#53579c", "G" = "#f06b22", "G+E" = "#ccc5be", "GxE" = "#FAD48D", "NC" = "grey42"))+
+  ylim(c(0,12000))+
+  guides(fill = "none"))
+
+
+#Save the plot
+png(here("Objects/images/winning_models_overall.png"), units="in", width=4, height=4, res=300)
+print(plot_proportion_winningmodels)
+dev.off()
+
+#Now I will create the figure for the supplementary - stratified by canonical and non canonical 
+(proportion_winningmodels_supp = lmGE_annot %>% 
+  group_by(VMR_category, model_group) %>% 
+  summarize(n = n()) %>% 
+  mutate(pct = round(n/sum(n),4)) %>% 
+  ggplot(aes(x = model_group,
+             y = n, 
+             fill = model_group, 
+             label = scales::percent(pct)))+
+  geom_col()+ 
+  geom_text(hjust = 0.45,
+            vjust = -0.1,
+            size = 5) + 
+  xlab("CHILD VMRs") +
+  labs(fill="Winning model")+
+  ylab("VMRs counts")+ 
+  cowplot::theme_cowplot()+
+  scale_fill_manual(values=c("E" = "#53579c", "G" = "#f06b22", "G+E" = "#ccc5be", "GxE" = "#FAD48D", "NC" = "grey42"))+
+  ylim(c(0,12000))+
+  facet_wrap("VMR_category"))
+
+png(here("Objects/images/proportion_winningmodels_supp.png"), units="in", width=10, height=4, res=300)
+print(proportion_winningmodels_supp)
+dev.off()
+```
+
+We can see that G+E and G models are the most usual winners. Is this affected by the VMR category (canonical vs non canonical) or the winning mode?
+
+```{r}
+#Supplementary figure: stratify by winning mode 
+(proportion_winningmodels_supp2 = lmGE_annot %>% 
+  filter(model_group != "NC") |> 
+  group_by(winning_mode, model_group) %>% 
+  summarize(n = n()) %>%
+  ungroup() |> 
+  ggplot(aes(x = model_group,
+             y = n, 
+             fill = model_group)) +
+  geom_col()+ 
+  xlab("") +
+  labs(fill="Best model")+
+  ylab("VMRs counts")+ 
+  cowplot::theme_cowplot()+
+  scale_fill_manual(values=c("E" = "#53579c", "G" = "#f06b22", "G+E" = "#ccc5be", "GxE" = "#FAD48D", "NC" = "grey42"))+
+  ylim(c(0,8000))+
+  facet_wrap("winning_mode"))
+
+png(here("Objects/images/proportion_winningmodels_supp2.png"), units="in", width=10, height=4, res=300)
+print(proportion_winningmodels_supp2)
+dev.off()
+
+### Stratify by both columns
+lmGE_annot %>% 
+  group_by(winning_mode, VMR_category ,model_group) %>% 
+  filter(!is.na(winning_mode)) %>% 
+  summarize(n = n()) %>% 
+  mutate(pct = n/sum(n),
+         model_group = forcats::fct_reorder(model_group, n, .desc = TRUE)) %>% 
+  ggplot(aes(x = model_group,
+             y = n, 
+             fill = model_group, 
+             label = scales::percent(pct)))+
+  geom_col()+ 
+  geom_text(vjust = -0.1,
+            size = 5) + 
+  xlab("CHILD VMRs") +
+  facet_grid(VMR_category ~ winning_mode , scales = "free_y")+
+  labs(fill="Winning model")+
+  ylab("VMRs counts")+ 
+  cowplot::theme_cowplot() +
+  scale_fill_manual(values=c("E" = "#53579c", "G" = "#f06b22", "G+E" = "#ccc5be", "GxE" = "#FAD48D", "NC" = "grey42"))
+
+```
+
+**Note: in the past RAMEN conducted an F test, which led to very biased p value distributions (right skewed) because of the variable selection step. This step is deprecated. Now, a threshold (already applied) based on a null distribution obtained through pemrutation is used to select models with better performance compared to randomized data.**
+
+FDR did not do anything to the significance cutoff because the p value distribution is already skewed
+
+G+E is the predominant winning model
+G+E and GxE models are always the winners when there are G and E variables available 
+
+### Decomposed variance 
+
+After exploring the proportion of non conclusive models, I will now focus on the VMRs which have a good explanatory winning model in different aspects such as partial R2, delta R2, etc. 
+
+```{r}
+#Remove winning models that did not pass the delta R2 threshold
+lmGE_annot = lmGE_annot %>% 
+  filter(pass_R2threshold_permutation == TRUE)
+
+### Plot total R2 of the models
+
+#See the distribution of R2
+(tot_R2_plot = lmGE_annot %>%  
+  ggplot(aes(x = tot_r_squared, fill = model_group)) +
+  geom_histogram(position = "stack") +
+  theme_cowplot() +
+  labs(title = "Total R2 distribution", x = "R squared") + 
+  cowplot::theme_cowplot() +
+  scale_fill_manual(values=c("G" = "#f06b22", "GxE" = "#FAD48D","G+E" = "#ccc5be","E" = "#53579c")) +
+  guides(fill = "none"))
+
+png(here("Objects/images/total_r2.png"), units="in", width=4, height=4, res=300)
+print(tot_R2_plot)
+dev.off()
+
+#Get the summary statistics of the total R2
+summary(lmGE_annot$tot_r_squared)
+sd(lmGE_annot$tot_r_squared)
+
+#### Exploring the behaviour of competition and default winning models stratified by winning model group.
+lmGE_annot %>% 
+  ggplot(aes(x = winning_mode, y = tot_r_squared)) +
+  geom_violin() +
+  geom_boxplot(width = 0.05)  +
+  facet_grid("model_group")+
+  theme_cowplot() +
+  geom_signif(comparisons = list(c("Competition winning", "Default winning"))) +
+  labs(title = "Total R2 distribution", x = "R squared")
+#We can see that competition and winning model only are present in G models. The distribution is different, but the n of default G models is very small anyways (49), compared to G competition winning models (5185)
+lmGE_annot %>% 
+  group_by(winning_mode, model_group) %>% 
+  summarise(n = n())
+#I dont know how much I can get from this plot
+
+# Now I want to know if there is any R2 difference between canonical and non canonical VMRs across the winning models, separated by winning mode. 
+lmGE_annot %>% 
+  ggplot(aes(x = winning_mode, y = tot_r_squared)) +
+  geom_violin() +
+  geom_boxplot(width = 0.05)  +
+  facet_grid(model_group ~ VMR_category)+
+  theme_cowplot() +
+  geom_signif(comparisons = list(c("Competition winning", "Default winning"))) +
+  labs(title = "Total R2 distribution", x = "R squared")
+```
+
+
+Now that we saw the R2 distribution, I want to see the results of the variance decomposition analysis. 
+
+```{r}
+##Main picture
+lmGE_annot %>% 
+  rename(G = g_r_squared,
+         E = e_r_squared,
+         GxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(G, E, GxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  ggplot(aes(x = Component, y = Partitioned_r2)) +
+  geom_boxplot() +
+  theme_cowplot() +
+  facet_grid(VMR_category ~ winning_mode ) + 
+  ggtitle("Partitioned R2 in all models")
+
+#Across all the models, G has a higher partitioned R2. Slightly less in default winning models. Let's stratify it
+
+#Plot decomposed variance
+lmGE_annot %>% 
+  rename(G = g_r_squared,
+         E = e_r_squared,
+         GxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(G, E, GxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  ggplot(aes(x = Partitioned_r2, y = Component, fill = Component)) +
+  ggridges::geom_density_ridges()  + 
+  scale_fill_brewer(palette = "Greys") +
+  theme_cowplot() +
+  theme(legend.position = "none") +
+  facet_grid(winning_mode~ VMR_category )+
+  ggtitle("Partitioned R2 in all models")
+
+#Get a table with statistics
+lmGE_annot %>% 
+  rename(G = g_r_squared,
+         E = e_r_squared,
+         GxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(G, E, GxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  group_by(Component) %>% 
+  summarise(mean_part_r  = mean(Partitioned_r2, na.rm = TRUE),
+            sd_part_r = sd(Partitioned_r2, na.rm = TRUE))
+
+#stratify it by winning model group
+lmGE_annot %>% 
+  rename(G = g_r_squared,
+         E = e_r_squared,
+         GxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(G, E, GxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  ggplot(aes(x = Partitioned_r2, y = Component, fill = Component)) +
+  ggridges::geom_density_ridges()  + 
+  scale_fill_brewer(palette = "Greys") +
+  theme_cowplot() +
+  theme(legend.position = "none") +
+  facet_grid(~ model_group) +
+  scale_x_continuous(breaks= c(0, 0.4, 0.8))
+
+#Same plot but with boxplot
+(boxplot_part_r2 = lmGE_annot %>% 
+  rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+  ggplot(aes(x = Component, y = Partitioned_r2)) +
+  geom_boxplot(fill = "#dad3cc") + 
+  theme_cowplot()+
+  theme(legend.position = "none") +
+  facet_grid(~ model_group) +
+  scale_y_continuous(breaks= c( 0.4, 0.8)) + 
+  ylab("Partitioned R squared") +
+  xlab("Term") +
+  panel_border() +
+  coord_flip())
+
+png(here("Objects/images/partial_R2.png"), units="in", width=4.5, height=4, res=300)
+print(boxplot_part_r2)
+dev.off()
+
+#Check if the trend is different in canonical and non canonical VMRs
+(boxplot_part_r2_supp = lmGE_annot %>% 
+  rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+  pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+  mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+  ggplot(aes(x = Component, y = Partitioned_r2)) +
+  geom_boxplot(fill = "#dad3cc") + 
+  theme_cowplot()+
+  theme(legend.position = "none") +
+  facet_grid(VMR_category ~ model_group) +
+  scale_y_continuous(breaks= c( 0.4, 0.8)) + 
+  ylab("Partitioned R squared") +
+  xlab("Term") +
+  panel_border() +
+  coord_flip())
+
+png(here("Objects/images/partial_R2_supp.png"), units="in", width=4.5, height=4, res=300)
+print(boxplot_part_r2_supp)
+dev.off()
+#Seems like the trend overall is similar
+
+#Test if they are statistically different: 
+t.test(x = lmGE_annot %>% 
+         rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+         pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+         mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+         filter(Component =="SNP") |> 
+         pull(Partitioned_r2),
+       y = lmGE_annot %>% 
+         rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+         pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+         mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+         filter(Component =="E") |> 
+         pull(Partitioned_r2)
+  )
+
+t.test(x = lmGE_annot %>% 
+         rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+         pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+         mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+         filter(Component =="SNP") |> 
+         pull(Partitioned_r2),
+       y = lmGE_annot %>% 
+         rename(SNP = g_r_squared,
+         E = e_r_squared,
+         SNPxE = gxe_r_squared) %>% 
+         pivot_longer( cols = c(SNP, E, SNPxE),
+                names_to = "Component",
+                values_to = "Partitioned_r2"
+               ) %>% 
+         mutate(Component = case_when(Component ==  "SNPxE"~ "SNP*E",
+                               TRUE ~ Component)) |> 
+         filter(Component =="SNP*E") |> 
+         pull(Partitioned_r2)
+  )
+  
+```
+
+The G component explains more variance than E
+
+- G seems to have a slight smaller effect on non canonical VMRs
+- Consistent with LASSO picking significantly less SNPs for ncVMRs
+
+### Proportion of E dimensions in winning models 
+
+#### Dimension frequency 
+
+I am also interested in knowing which dimensions are more frequent in the winning models with an E variable involved
+
+```{r}
+prenatal_environment_dimensions = read.csv(here("Objects/prenatal_environment_dimensions.csv"))
+
+
+lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>% 
+  mutate(dimension = as.factor(dimension),
+         dimension = fct_infreq(dimension)) %>% 
+  ggplot(aes(y = dimension)) +
+  geom_bar() +
+  facet_grid(model_group ~ VMR_category) +
+  theme_cowplot() + 
+  labs(title = "Dimension of the E variables (winning models)", y = "Environmental dimension")
+
+#There is no difference between canonical and non canonical or g/g=e/gxe in proportions so I will remove the stratification
+
+(supp_fig_env_dim = lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>% 
+  mutate(dimension = as.factor(dimension),
+         dimension = fct_infreq(dimension)) %>% 
+  ggplot(aes(y = dimension)) +
+  geom_bar() +
+  facet_grid(model_group ~ VMR_category) +
+  theme_cowplot() + 
+  labs(y = "Environmental dimension"))
+
+png(here("Objects/images/supp_fig_env_dim.png"), units="in", width=5, height=5, res=300)
+print(supp_fig_env_dim)
+dev.off()
+
+#Get proportions
+lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>% 
+  mutate(dimension = as.factor(dimension),
+         dimension = fct_infreq(dimension)) %>% 
+  group_by(dimension) |> 
+  summarize(n = n()) |> 
+  mutate(proportion = n/sum(n))
+
+```
+
+In all the VMR categories and winning models, maternal health is the category with the highest number of variables in the winning models. Could be related to the fact that it is the category with the highest number of variables measured. Or it could be a true effect. 
+
+I will conduct an independence test to explore this.
+
+```{r}
+(dimensions_emodels = lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>% 
+  group_by(dimension) %>% 
+  summarise(n = n()))
+
+(props = prenatal_environment_dimensions %>% 
+    group_by(dimension) %>% 
+    summarise(n = n()) %>% 
+    mutate(p = n/sum(n)))
+
+chisq.test(x = dimensions_emodels$n, p = props$p)
+
+library(knitr)
+#Print the table 
+props %>% 
+  left_join(dimensions_emodels %>% 
+              rename(observed_VMR_models = n),
+            by = "dimension") %>% 
+  mutate(expected_VMR_models = sum(observed_VMR_models)*p,
+         observed_p = observed_VMR_models / sum(observed_VMR_models)) %>% 
+  select(dimension, n, p, observed_p, expected_VMR_models, observed_VMR_models) %>% 
+  knitr::kable()
+
+```
+
+The observed proportion of dimensions in winning models is different to the (X2 = 59.788, p val < 0.05). The VMRs are depleted in MN and enriched in MH and BE. 
+
+#### Variable frequency
+
+Now I will see the frequency of the variables independently of their dimension
+
+```{r}
+
+lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>%  #Remove G variables 
+  mutate(variables = as.factor(variables),
+         variables = fct_infreq(variables)) %>% 
+  ggplot(aes(y = variables)) +
+  geom_bar() +
+  facet_wrap("model_group") +
+  theme_cowplot() + 
+  labs(title = "E variables (winning models)", y = "Environmental variable")
+
+#Save object
+e_vars_freq = lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(!is.na(dimension)) %>%  #Remove G variables 
+  group_by(variables) %>% 
+  summarise(frequency = n()) %>% 
+  mutate(proportion_all_vmrs = frequency/nrow(lmGE_annot))
+
+fwrite(e_vars_freq, here("Objects/e_vars_freq_lmGE.csv"), row.names = FALSE)
+
+```
+
+It is very important not to overinterpret these results! I just plotted this out of curiosity. However we must remember that there is correlation in the exposome data and LASSO can pick at random among a group of highly correlated variables. Also, this package selects models that best explains the variability of the data, so please do not make causal interpretations out of this. 
+
+Also, I am using E variables one by one and selecting the model with one E variable that better explains DNAme variability. It could be the case of a VMR's DNAme levels to be associated with for example smoking, but also with another variable that alone explains better the variability compared to smoking. So, if that VMR has an association with more than 1 E variable, only one will show up, which does not mean that the other one was not associated. 
+
+```{r}
+smoking_vmrs = lmGE_annot %>% 
+  unnest(variables) %>% 
+  filter(variables == "prenatal_smoke")
+
+fwrite(smoking_vmrs, here("Objects/smoking_winning_vmrs.csv"), row.names = FALSE)
+#Save this object potentially for future analyses
+
+```
+
+
+### mQTLs in G models 
+
+Next, I wondered if mQTLs have a higher chance to be a winning model than what we would expect by chance. To answer this question, I will use as background only the selected SNPs. 
+
+Now I will check the enrichment with mQTLs detected with the CHILD data set
+
+```{r}
+#Load mQTL data sets
+cord_cis_mqtls <- read.delim("mQTLs/Results/cord_cis_mqtls")
+
+selected_variables = fread("Objects/selectVariables_CHILD.csv", data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+
+lmGE_annot = fread(here("Objects/lmGE_res_annot_child.csv"), data.table = FALSE) %>% 
+  mutate(variables = str_split(variables, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+
+#Get the name of the winning SNPs
+winning_SNPs =  lmGE_annot %>% 
+  unnest(variables) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(variables = variable),
+            by = "variables") %>% 
+  filter(is.na(dimension)) %>% #Remove E variables 
+  filter(variables != "") |> 
+  pull(variables) %>% 
+  unlist() %>% 
+  unique()
+length(winning_SNPs) # 21765 winning SNPs
+
+#Get the name of the selected SNPs
+selected_SNPs = selected_variables %>% 
+  unnest(selected_genot) %>% 
+  filter(selected_genot != "") %>% 
+  pull(selected_genot) %>% 
+  unique()
+length(selected_SNPs) # 343874 selected SNPs
+
+all(winning_SNPs %in% selected_SNPs)
+
+chisq_df = data.frame(snp = selected_SNPs) %>% 
+  mutate(mQTL = case_when(snp %in% cord_cis_mqtls$SNP ~ "mQTL",
+                          TRUE ~ "no_mQTL"),
+         winner = case_when(snp %in% winning_SNPs ~ "winner",
+                              TRUE ~ "znot_winner")) |> 
+  select(-c(snp))
+
+(chisq_df = table(chisq_df))
+
+chisq.test(chisq_df)
+
+#Calculate ODDS ratio
+fisher.test(chisq_df)$estimate
+```
+

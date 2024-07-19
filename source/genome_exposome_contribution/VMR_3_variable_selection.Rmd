@@ -1,0 +1,465 @@
+---
+title: "VMR 3 - Variable selection"
+author: "Erick I. Navarro-Delgado"
+date: ''
+output: 
+  prettydoc::html_pretty:
+    keep_md: true
+    theme: cayman
+    toc: true
+    toc_depth: 2
+---
+
+In this section, I will use the VMRs identified in the previous document, summarize their DNAme state, find the SNPs in cis, and conduct the variable selection to reduce the number of variables that will be used to fit models in the following stage. 
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(RAMEN)
+library(here)
+library(vcfR)
+library(data.table)
+library(doFuture)
+library(future)
+library(cowplot)
+library(ggsignif)
+```
+
+
+## Find cis SNPs
+```{r}
+meta_geno = fread( here("Objects/imputed_genot_CHILD_GTmetadata.csv"), data.table = FALSE) %>% 
+  dplyr::mutate(POS = as.numeric(POS),
+         CHROM = as.numeric(CHROM)) 
+
+imputed_genot_CHILD_gt_filtered = fread(here("Objects/imputed_genot_CHILD_gt_filtered.csv"), data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1")
+
+#Load DNAme data
+VMRs_df = fread(here("Objects/VMRs_CHILD.csv"), data.table = FALSE) %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"))
+
+cis_snps = RAMEN::findCisSNPs(VMRs_df = VMRs_df, 
+                              genotype_information = meta_geno,
+                              distance = 1000000)
+
+```
+
+When trying to save the cis_snps data frame, I got an error because some VMRs have no surrounding SNP, and the function returns NULL in some fields. fwrite() does not support NULL values, so I just have to substitute them with NAs. 
+
+```{r}
+# Error in fwrite(cis_snps, here("Objects/cis_snps_VMRdf.csv"), col.names = TRUE,  : 
+#   Row 27723 of list column is type 'NULL' - not yet implemented. fwrite() can write list columns containing items which are atomic vectors of type logical, integer, integer64, double, complex and character.
+# # Had to do this to write it
+#cis_snps[27723,"SNP"] = NA
+
+null_snps = which(cis_snps$SNP %in% list(NULL))
+cis_snps[null_snps,"SNP"] = NA
+
+cis_snps %>% 
+  mutate(type = case_when(n_VMPs == 1 ~ "non canonical",
+                          TRUE ~ "canonical"),
+         surrounding_SNPs = case_when( surrounding_SNPs > 3000 ~ 3000,
+                                       TRUE ~ surrounding_SNPs)) %>% 
+  ggplot(aes(x = surrounding_SNPs)) +
+  geom_density() +
+  facet_grid("type") +
+  cowplot::theme_cowplot() 
+
+fwrite(cis_snps, here("Objects/cis_snps_VMRdf.csv"), col.names = TRUE, row.names = FALSE)
+
+```
+
+
+## Summarize VMRs
+
+Now, I will summarize the VMR methylation state for each individual and each VMR. 
+
+```{r}
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+options(future.globals.maxSize= +Inf)
+#future::plan(future::tweak(multisession, workers = 8))     # Set the evaluation strategy
+
+methylation_data = fread(here("Objects/m_vals_raw.csv"), data.table = FALSE) %>% 
+  column_to_rownames("V1")
+summarized_VMRs = RAMEN::summarizeVMRs(VMRs_df = cis_snps, methylation_data = methylation_data)
+#It took almost 6 mins
+
+fwrite(summarized_VMRs, file = here("Objects/summarized_VMRs.csv"), row.names = TRUE, col.names = TRUE)
+
+# Explore the distribution of DNAme in regions
+
+x = summarized_VMRs |> 
+  tibble::rownames_to_column(var = "ID") |> 
+  pivot_longer(-ID) 
+x |> 
+  ggplot(aes(x = value)) +
+  geom_density()
+
+```
+
+At this point, we have the summarized DNAme state per VMR, genotyping data, clean environmental data, and we have identified the SNPs in cis that would be of interest for each VMR. 
+
+The following step is to conduct variable selection to narrow the number of variables that will be used to fit models in the next document. 
+
+## Select variables
+
+Since the variable selection strategy involves a lot of computational work, I conducted this step in an R script that submitted to GPCC directly. Also, because for some reason in Rstudio I can use up to 8 workers only. 
+
+This R script is the one that I used for this step: 
+
+```{r, eval=FALSE}
+## Conduct variable selection in the CHILD dataset
+
+#Load libraries
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+
+#Load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  data.matrix()
+prenatal_environment = read.csv("Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  data.matrix()
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+imputed_genot_CHILD_gt_filtered = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix()
+
+summarized_VMRs = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+#future::plan(tweak(multisession, workers = 16))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+Sys.time()
+res_selection = RAMEN::selectVariables(VMRs_df = cis_snps,
+                              genotype_matrix = imputed_genot_CHILD_gt_filtered,
+                              environmental_matrix = prenatal_environment,
+                              covariates = covariates,
+                              summarized_methyl_VMR = summarized_VMRs,
+                              seed = 1)
+Sys.time()
+
+null_snps = which(res_selection$selected_genot %in% list(NULL))
+res_selection[null_snps,"selected_genot"] = NA
+null_env = which(res_selection$selected_env %in% list(NULL))
+res_selection[null_env,"selected_env"] = NA
+
+fwrite(res_selection,  "Objects/selectVariables_CHILD.csv")
+```
+
+### Exploration of the results 
+
+Now I will explore the results. First, I am interested in knowing if there is any difference between canonical and non canonical VMRs before the selection in cis SNP number
+
+```{r}
+#Load data
+selected_variables = fread(here("Objects/selectVariables_CHILD.csv"), data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+
+#Merge selected variables and cis snps to get the category of the VMR index
+selected_variables = selected_variables %>% 
+  left_join(cis_snps %>% 
+              select(c(VMR_index,n_VMPs)),
+            by = "VMR_index")
+
+## Create object to plot the distribution of initial and selected variables in canonical and non canonical VMRs
+selected_vars_annot = selected_variables %>% 
+  transmute(VMR_index = VMR_index,
+            VMR_type = case_when(n_VMPs > 1 ~ "canonical",
+                          n_VMPs == 1 ~ "non canonical"), 
+            genome = lengths(selected_genot),
+            exposome = lengths(selected_env),
+            genome = case_when(selected_genot %in% list("") ~ 0,
+                                     TRUE ~ genome),
+            exposome = case_when(selected_env %in% list("") ~ 0,
+                                     TRUE ~ exposome)) %>% 
+  pivot_longer(-c(VMR_index, VMR_type), names_to = "group", values_to = "variables") %>% 
+  mutate(time = "Post selection") |> 
+  rbind(cis_snps |> 
+          mutate(VMR_type = case_when(n_VMPs > 1 ~ "canonical",
+                          n_VMPs == 1 ~ "non canonical"),
+                 exposome = 94) |> 
+          rename(genome = surrounding_SNPs) |> 
+          select(VMR_index, VMR_type, exposome, genome) |> 
+          pivot_longer(c(exposome, genome),  names_to = "group", values_to = "variables") |> 
+          mutate(time = "Pre selection")) |> 
+  mutate(time = factor(time, levels = c("Pre selection", "Post selection")))
+
+#Create a summary table 
+selected_vars_annot |> 
+  group_by(time, group, VMR_type) |> 
+  summarize(mean = mean(variables),
+            sd = sd(variables),
+            median = median(variables)) |> 
+  as.data.frame()
+
+#Now without canonical-non canonical grouping
+selected_vars_annot |> 
+  group_by(time, group) |> 
+  summarize(mean = mean(variables),
+            sd = sd(variables),
+            median = median(variables)) |> 
+  as.data.frame()
+```
+
+I will now conduct the tests 
+
+```{r}
+library(BSDA)
+t.test(x = selected_vars_annot |> 
+         filter(time == "Pre selection",
+                group == "genome",
+                VMR_type == "canonical") |> 
+         pull(variables),
+       y = selected_vars_annot |> 
+         filter(time == "Pre selection",
+                group == "genome",
+                VMR_type == "non canonical") |> 
+         pull(variables))
+```
+
+So there is a statistical difference between non canonical and canonical number of cis SNPs from the beginning. Are they different in the number of selected variables?
+
+```{r}
+#test if theres any difference 
+t.test(x = selected_vars_annot |> 
+         filter(time == "Post selection",
+                group == "genome",
+                VMR_type == "canonical") |> 
+         pull(variables),
+       y = selected_vars_annot |> 
+         filter(time == "Post selection",
+                group == "genome",
+                VMR_type == "non canonical") |> 
+         pull(variables))
+```
+
+The difference in means persisted. Now lets check for the environment post selection 
+
+```{r}
+t.test(x = selected_vars_annot |> 
+         filter(time == "Post selection",
+                group == "exposome",
+                VMR_type == "canonical") |> 
+         pull(variables),
+       y = selected_vars_annot |> 
+         filter(time == "Post selection",
+                group == "exposome",
+                VMR_type == "non canonical") |> 
+         pull(variables))
+```
+
+There is a difference in the selected environmental variables too. After testing the group differences, I will make the plots. 
+
+First, I will start with the plot that will go in the main figure (without stratifying canonical and non-canonical VMRs)
+
+```{r}
+(plot_pre_post_vars = selected_vars_annot |> 
+  ggplot(aes(x = group, y = variables)) +
+  geom_violin(linewidth = 0.3, fill = "#b2becb") + 
+  geom_boxplot(width=0.1, outlier.shape=NA, linewidth = 0.6) +
+  facet_wrap(~time)+
+  cowplot::theme_cowplot(font_size = 16) +
+  scale_y_log10() +
+  theme(panel.spacing = unit(2, "lines")))
+
+png(here("Objects/images/pre_post_nvars_varselection.png"),
+    units="in", width=8, height= 3.5, res=300)
+print(plot_pre_post_vars)
+dev.off()
+
+#Now the supplementary figure with the stratification 
+(plot_pre_post_vars_supp = selected_vars_annot |> 
+  ggplot(aes(x = VMR_type, y = variables)) +
+  geom_violin(linewidth = 0.3, fill = "#b2becb") + 
+  geom_boxplot(width=0.1, outlier.shape=NA, linewidth = 0.6) +
+  facet_grid(group ~ time, scales = "free")+
+  geom_signif(test = "t.test", comparisons = list(c("canonical", "non canonical")), map_signif_level = TRUE, vjust = 1.5) +
+  labs(x = "VMR type") + 
+  cowplot::theme_cowplot(font_size = 16) + 
+  panel_border())
+
+png(here("Objects/images/pre_post_nvars_varselection_supp.png"),
+    units="in", width=8, height=6, res=300)
+print(plot_pre_post_vars_supp)
+dev.off()
+```
+
+Now, the next step in the exploration is to know how many of the VMRs had no E/G variables selected. To show this, I will use an upset plot 
+
+```{r}
+library(ggupset)
+
+(upset_selected_vars = selected_vars_annot |> 
+  filter(time == "Post selection") |> 
+  pivot_wider(names_from = group, values_from = variables) |> 
+  mutate(Selected_variables = case_when(genome > 0 & exposome > 0 ~ list(c("Exposome", "Genome")),
+                                        genome > 0 ~ list(c("Genome")),
+                                        exposome > 0 ~ list(c("Exposome")),
+                                        TRUE ~ list(c()))) |> 
+  ggplot(aes(x=Selected_variables)) +
+  geom_bar(fill = "#1c246c") +
+  scale_x_upset() +
+  geom_text(stat='count', aes(label=..count..), vjust=-0.2) + 
+  theme_cowplot(font_size = 12) +
+  labs(x = "", y = "VMRs") +
+  scale_y_continuous(limits = c(0,16500)))
+
+png(here("Objects/images/upset_vars_sel.png"),
+    units="in", width=3.5, height=3, res=300)
+print(upset_selected_vars)
+dev.off()
+
+#Now the supplementary with stratification 
+(upset_selected_vars_strat = selected_vars_annot |> 
+  filter(time == "Post selection") |> 
+  pivot_wider(names_from = group, values_from = variables) |> 
+  mutate(Selected_variables = case_when(genome > 0 & exposome > 0 ~ list(c("Exposome", "Genome")),
+                                        genome > 0 ~ list(c("Genome")),
+                                        exposome > 0 ~ list(c("Exposome")),
+                                        TRUE ~ list(c()))) |> 
+  mutate(VMR_type = factor(VMR_type, levels = c("canonical", "non canonical"))) |> 
+  ggplot(aes(x=Selected_variables)) +
+  geom_bar(aes(fill = VMR_type), position = "dodge") +
+  scale_x_upset() +
+  geom_text(stat='count', aes(group = VMR_type, label=..count..), vjust=-0.2, position = position_dodge(width = 1)) + 
+  theme_cowplot(font_size = 12) +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "", y = "VMRs") +
+  scale_y_continuous(limits = c(0,12000)) )
+
+png(here("Objects/images/upset_vars_sel_sup.png"),
+    units="in", width=5, height=3, res=300)
+print(upset_selected_vars_strat)
+dev.off()
+
+```
+
+## Relationship between initial number and selected variables
+
+is the LASSO step of variable selection sensitive to initial number of variables? (in this case SNPs)?
+
+```{r}
+(relation_selected_initial_snps = selected_variables %>% 
+  mutate(selected_g_n = lengths(selected_genot),
+         selected_g_n = case_when(selected_genot %in% c(list(NULL), list(""), list(NA), list(character(0))) ~ 0, 
+                                  TRUE ~ selected_g_n)) %>% 
+  select(VMR_index, selected_g_n) %>%
+  left_join(cis_snps %>% 
+              select(VMR_index, surrounding_SNPs), 
+            by = "VMR_index") %>% 
+  ggplot(aes(x = surrounding_SNPs, y = selected_g_n)) +
+  geom_point(alpha = 0.2, color = "#1c246c") +
+  geom_smooth(color = "#f06b22") +
+  theme_cowplot() +
+  labs(y = "Selected SNPs", x = expression(paste(italic("cis"), "SNPs"))))
+
+png(here("Objects/images/relation_selected_initial_snps.png"),
+    units="in", width=4, height=3, res=300)
+print(relation_selected_initial_snps)
+dev.off()
+
+selected_variables %>% 
+  mutate(selected_g_n = lengths(selected_genot),
+         selected_g_n = case_when(selected_genot %in% c(list(NULL), list(""), list(NA), list(character(0))) ~ 0, 
+                                  TRUE ~ selected_g_n)) %>% 
+  select(VMR_index, selected_g_n) %>%
+  left_join(cis_snps %>% 
+              select(VMR_index, surrounding_SNPs), 
+            by = "VMR_index") %>% 
+  select(-VMR_index) %>% 
+  cor(method = "pearson")
+
+```
+
+We can see that the number of cis SNPs does not determine the number of SNPs that LASSO will select. 
+
+## Testing independence of selected SNPs and mQTLs
+
+After conducting the variable selection step, I wanted to explore if the set of selected variables is enriched in mQTLs (genotypes associated with a differential DNA methylation level). Here, I will test for enrichment of mQTLs using in-house detected mQTLs.
+
+```{r}
+#Load mQTL data sets
+cord_cis_mqtls <- read.delim("mQTLs/Results/cord_cis_mqtls")
+
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+selected_variables = fread("Objects/selectVariables_CHILD.csv", data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+
+cis_snps_unlist = cis_snps |> 
+  pull(SNP) |> 
+  unlist() |> 
+  unique()
+selected_variables_unlist = selected_variables |> 
+  pull(selected_genot) %>% 
+  unlist() |> 
+  unique()
+
+
+all(selected_variables_unlist %in% cis_snps_unlist)
+
+#Create the data frame
+snps_mqtl_selected_EPIC = data.frame(snp = cis_snps_unlist) %>% 
+  mutate(mQTL = case_when(snp %in% cord_cis_mqtls$SNP ~ "mQTL",
+                          TRUE ~ "no_mQTL"),
+         selected = case_when(snp %in% selected_variables_unlist ~ "selected",
+                              TRUE ~ "tnot_selected")) |> 
+  select(-snp) 
+
+(table_mqtls_selected = table(snps_mqtl_selected_EPIC))
+
+chisq.test(table_mqtls_selected)
+
+#Calculate ODDS ratio
+fisher.test(table_mqtls_selected)$estimate
+```
+
+## Dimension frequency of selected variables 
+
+```{r}
+prenatal_environment_dimensions = read.csv(here("Objects/prenatal_environment_dimensions.csv"))
+
+selected_variables %>%  
+  filter(!selected_env %in% list(c(""))) %>% #Remove empty lists
+  select(-selected_genot) %>% 
+  unnest(selected_env) %>% 
+  left_join(prenatal_environment_dimensions %>% 
+              rename(selected_env = variable),
+            by = "selected_env" ) %>% 
+  mutate(dimension = as.factor(dimension),
+         dimension = fct_infreq(dimension)) %>% 
+  ggplot(aes(x = dimension)) +
+  geom_bar() +
+  theme_cowplot() + 
+  labs(title = "Dimension of the selected variables", x = "Environmental dimension") +
+  geom_text(stat='count', aes(label=..count..), vjust=-0.2) 
+  
+```
+

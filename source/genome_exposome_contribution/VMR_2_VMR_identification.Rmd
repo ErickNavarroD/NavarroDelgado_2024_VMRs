@@ -1,0 +1,214 @@
+---
+title: "VMR 2 - VMR identification"
+author: "Erick I. Navarro-Delgado"
+date: '2022-08-16'
+output: 
+  prettydoc::html_pretty:
+    keep_md: true
+    theme: cayman
+    toc: true
+    toc_depth: 2
+---
+
+This file details the detection of VMRs of 699 cord blood samples from the CHILD cohort that have information regarding DNAme profiling, genotyping and prenatal environment. I make use of the clean DNAme data pre-processed by Karlie Edwards and the previous work found in VMR_1_data_EDA.Rmd files. 
+
+* **Note for this script**: This is an RMD that I created while developing RAMEN and the project, so some terms here are outdated. For instance, lonely probes VMRs are now referred as non-canonical VMRs, and strict VMRs are now canonical VMRs. 
+
+## Loading the data and packages
+
+```{r load packages and data, warning=F, message=F}
+library(data.table)
+library(tidyverse)
+library(GenomicRanges)
+library(scales)
+library(RAMEN)
+library(doFuture)
+library(eulerr)
+
+#Load information about the EPIC array probes
+# Information about the file: https://support.illumina.com/bulletins/2016/08/infinium-methylationepic-manifest-column-headings.html
+load("EPIC_fdat.RData") 
+residual_mvals = fread("Objects/m_vals_corrected.csv", data.table = F ) %>% column_to_rownames(var = "V1")
+
+```
+
+##  VMR identification
+
+```{r identify cVMRs}
+#Convert the strand of all the probes to + because the MAPINFO for all the probes is provided for the + strand
+array_manifest = fData_EPIC %>% 
+  dplyr::mutate(STRAND = rep(strand("+"), nrow(fData_EPIC))) %>% 
+  dplyr::select(MAPINFO, CHR, TargetID, STRAND)
+
+#Identify VMRs
+doFuture::registerDoFuture()
+future::plan(multisession)
+options(future.globals.maxSize= +Inf)
+
+VMRs_var = RAMEN::findVMRs(array_manifest = array_manifest, 
+                     methylation_data = residual_mvals, 
+                     var_method = "variance",
+                     var_threshold_percentile = 0.9, 
+                     max_distance = 1000,
+                     cor_threshold = 0.15)
+```
+
+## VMR EDA
+After identifying the VMRs, I will do some EDA to see the distribution of the width, number of probes, etc. 
+```{r cVMR EDA}
+#See the proportion of non canonical VMR that we have 
+
+blank_theme <- theme_minimal()+
+  theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.border = element_blank(),
+  panel.grid=element_blank(),
+  axis.ticks = element_blank(),
+  plot.title=element_text(size=14, face="bold")
+  )
+
+data.frame(Proportion = c(length(VMRs_var[["canonical_VMRs"]]) / (length(VMRs_var[["canonical_VMRs"]]) + length(VMRs_var[["non_canonical_VMRs"]])), 
+                          length(VMRs_var[["non_canonical_VMRs"]])/(length(VMRs_var[["canonical_VMRs"]]) + length(VMRs_var[["non_canonical_VMRs"]]))),
+           Group = c("canonical","non_canonical")) %>% 
+  ggplot( aes(x="", y=Proportion, fill=Group))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  blank_theme +
+  theme(axis.text.x=element_blank()) +
+  geom_text(aes(y = Proportion/2 + c(0, cumsum(Proportion)[-length(Proportion)]), 
+            label = percent(Proportion)),
+            size=5)+
+  ggtitle(str_glue("Composition of the ",length(VMRs_var[["canonical_VMRs"]]) + length(VMRs_var[["non_canonical_VMRs"]]) , " VMRs_var"))
+
+#Convert GRanges object to a data frame to make it easier to plot things
+cVMRs_df = as.data.frame(VMRs_var[["canonical_VMRs"]]) %>% 
+  rbind(as.data.frame(VMRs_var[["non_canonical_VMRs"]])) %>% 
+  select( -c(width.1,strand))
+
+#Number of regions
+nrow(cVMRs_df)
+
+```
+### Width distribution
+For this and the rest of the descriptive plots, I will remove the lonely-probes cVMRs, since their description is useless (they are width 1 and they have 1 probe per VMR)
+
+```{r cVMR EDA width, fig.width=4,fig.height=3}
+cVMRs_df %>% 
+  mutate(width = case_when(width >= 2000 ~ 2000,
+                           TRUE ~ as.numeric(width))) %>% 
+  #Note for me: Something interesting happening above! I got an error if i didnt coerce width to numeric because in the data frame width is integer, not the standard numeric type of R. 
+  ggplot(aes(x = width))+
+  geom_histogram(binwidth = 50)+
+  theme_classic()+
+  ggtitle("VMRs width")
+
+#Get the summary
+summary(cVMRs_df$width)
+
+```
+From here and to the rest of the descriptive plots, I will remove the lonely-probes cVMRs, since their description is useless (they are width 1 and they have 1 probe per VMR). Including them in the plots will only result in something like what happened above (they saturate the plot).
+
+```{r cVMR EDA width wo lp, fig.width=4,fig.height=3}
+library(cowplot)
+cVMRs_df %>% 
+  filter(width > 1) %>% 
+  mutate(width = case_when(width >= 2000 ~ 2000,
+                           TRUE ~ as.numeric(width))) %>% 
+  ggplot(aes(x = width))+
+  geom_histogram(binwidth = 50, fill = "#BAB4D8")+
+  theme_classic()+
+  ggtitle("canonical VMRs width") +
+  theme_cowplot() 
+
+#Get the summary
+summary(cVMRs_df %>% 
+          filter(width > 1) %>% 
+          pull(width))
+
+```
+
+### Number of probes per region 
+```{r number of probes EDA, fig.width=4,fig.height=3}
+cVMRs_df %>% 
+  filter(width > 1) %>% 
+  mutate(n_VMPs = case_when(n_VMPs >= 10 ~ 10,
+                          TRUE ~ as.numeric(n_VMPs))) %>% 
+  ggplot(aes(x = n_VMPs))+
+  geom_bar(fill = "#BAB4D8" )+
+  cowplot::theme_cowplot()+
+  ggtitle("Probes per region")+
+  xlab("Number of probes")+
+  scale_x_continuous(breaks=c(2,6,10))
+
+#Get the summary
+summary(cVMRs_df %>% 
+          filter(width > 1) %>%
+          pull(n_VMPs))
+```
+```{r save the plot figures in hd, eval=FALSE, echo=FALSE}
+
+png("/mnt/scratch/KoborLab/CHILD/enavarro/CHILD_birth/Objects/poster_CHILD_VMRs_width.png",
+    units="in", width=4, height=3, res=300)
+
+cVMRs_df %>% 
+  filter(width > 1) %>% 
+  mutate(width = case_when(width >= 2000 ~ 2000,
+                           TRUE ~ as.numeric(width))) %>% 
+  ggplot(aes(x = width))+
+  geom_histogram(binwidth = 50, fill = "#BAB4D8")+
+  theme_classic()+
+  ggtitle("canonical VMRs width") +
+  theme_cowplot() 
+dev.off()
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#      3      99     282     409     607    5164 
+
+
+png("/mnt/scratch/KoborLab//CHILD/enavarro/CHILD_birth/Objects/poster_CHILD_probes_per_VMR.png",
+    units="in", width=4, height=3, res=300)
+
+cVMRs_df %>% 
+  filter(width > 1) %>% 
+  mutate(n_VMPs = case_when(n_VMPs >= 10 ~ 10,
+                          TRUE ~ as.numeric(n_VMPs))) %>% 
+  ggplot(aes(x = n_VMPs))+
+  geom_bar(fill = "#BAB4D8" )+
+  cowplot::theme_cowplot()+
+  ggtitle("Probes per region")+
+  xlab("Number of probes")+
+  scale_x_continuous(breaks=c(2,6,10))
+
+#  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  2.000   2.000   2.000   2.834   3.000  31.000 
+
+dev.off()
+
+
+png("/mnt/scratch/KoborLab//CHILD/enavarro/CHILD_birth/Objects/VMR_types_child.png",
+    units="in", width=4, height=3, res=300)
+
+cVMRs_df %>% 
+  mutate(Type = case_when(n_VMPs == 1 ~ "Non-canonical",
+                          n_VMPs > 1 ~ "Canonical")) %>% 
+ggplot(aes(x=factor(1), fill=Type))+
+  geom_bar(width = 1)+
+  coord_polar("y") +
+  theme_cowplot() +
+  theme(axis.text.x=element_blank()) +
+  ggtitle("VMRs in CHILD")+
+  scale_fill_manual(values = c("#BAB4D8", "#5C5D9E"))
+dev.off()
+```
+
+Finally, I export the results
+
+```{r export results}
+fwrite(cVMRs_df,"/mnt/scratch/KoborLab/CHILD/enavarro/CHILD_birth/Objects/VMRs_CHILD.csv")
+```
+
+## Session Info
+```{r session info}
+sessionInfo()
+```
+

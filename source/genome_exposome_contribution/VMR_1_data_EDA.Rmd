@@ -1,0 +1,373 @@
+---
+title: "VMRs 1 - EDA & Identification of Highly Variable Probes "
+author: "Erick I. Navarro-Delgado"
+date: '2022-08-16'
+output: 
+  prettydoc::html_pretty:
+    keep_md: true
+    theme: cayman
+    toc: true
+    toc_depth: 2
+
+---
+This file details the detection of VMRs of 813 cord blood samples from the CHILD cohort. I make use of the clean DNAme data pre-processed by Karlie Edwards.
+
+As a first step, I will regress out the DNAme levels accounting for sex, age, cell type estimated proportions and first X genotyping PCs to account for population stratification. 
+
+## Loading the data
+```{r load packages, warning=F, message=F}
+library(methylumi)
+library(data.table)
+library(tidyverse)
+library(limma)
+library(SNPRelate)
+library(ggrepel)
+library(broman) #For the manyboxplot plot
+library(RColorBrewer)
+library(FlowSorted.Blood.EPIC)
+library(here)
+library(cowplot)
+```
+
+```{r loading_data}
+#Load clean cord blood DNAme data 
+CHILD_cord = readRDS(here("Objects/Cord_cleaned_RGset.rds"))
+CHILD_cord
+
+#Load metadata
+sampleInfo = fread("SampleInfoFinal.csv", data.table = F) %>% 
+  filter(Sample_Type == "Cord") %>% 
+  dplyr::rename(Sex = Gender, #Babies have no gender
+                ethnicity_mom = race_mom) 
+  
+glimpse(sampleInfo)
+
+#Load cell proportions
+cell_counts_cord = readRDS("RAW_CORD_cell_counts_IDOL_both.RDS") %>% 
+  dplyr::select(-Method)
+head(cell_counts_cord)
+
+```
+
+## Exploring covariates
+### Sex
+By exploring the sex proportion in the dataset, we can see that it is overall a balanced dataset in terms of sex composition. 
+```{r sex EDA}
+sampleInfo %>% 
+  ggplot(aes(Sex))+
+  geom_bar() +
+  geom_text(stat='count', aes(label=..count..), vjust=-1) +
+  theme_classic()
+
+```
+
+### Gestational Age
+We first start by checking the distribution of the data
+```{r age_EDA, warning= F}
+summary(sampleInfo$Sample_Age_Months)
+
+sampleInfo %>% 
+  ggplot(aes(Sample_Age_Months))+
+  geom_histogram(bins = 30)+
+  theme_classic()
+
+removed_preterm = sampleInfo %>% 
+  filter(Sample_Age_Days < (36*7)) %>% 
+  pull(Sample_Name)
+
+```
+We can see that the data is approximately normally distributed around 9.3 months, as we would expect. 
+We can see that there are 9 samples that have no information regarding gestational age. 
+
+```{r age_EDA_2}
+(flagged_samples_Age = sampleInfo %>% 
+  filter(is.na(Sample_Age_Days)) %>% 
+  pull(Sample_Name)) 
+```
+
+### Cell type estimated proportions
+
+I checked the cell type proportions that I found here and the ones predicted in other cord blood samples from cohorts in the Kobor lab, and found a similar pattern. 
+
+```{r cell_counts_EDA}
+summary(cell_counts_cord)
+
+cell_counts_cord %>% 
+  rownames_to_column(var = "Sample_Name") %>% 
+  pivot_longer(cols = -"Sample_Name", values_to = "Proportion", names_to = "Cell_Type") %>% 
+  ggplot(aes(x = Cell_Type, y = Proportion))+
+  geom_boxplot()+
+  theme_classic()
+```
+
+#### PCA
+
+**Cell type proportions are compositional data and require transformation for PCA**
+
+Cell type proportions are compositional data (sum up to 1, and the proportion value are positive and relative). Such data needs to be transformed into real Euclidean space for count data PCA analysis ([Filzmoser et al. 2009](https://onlinelibrary.wiley.com/doi/abs/10.1002/env.966),  [Avalos-Fernandez et al. 2018](https://dl.acm.org/doi/pdf/10.5555/3327757.3327774)). One of a commonly used transformation is *isometric logratio (ilr) transformation.* The data is transformed into real coordinates and preserves all metric properties (angles and distances) ([Egozcue, 2003](https://link.springer.com/article/10.1023/A:1023818214614)). With the ilr transformation, the output matrix  has 1 less columns than the input matrix. 
+
+We apply isometric logratio transformation (ilr) on the cell type proportion data and followed by robust PCA as proposed by Filzmoser et al. 2009. (see script [ilr-transformed robust PCA](https://rdrr.io/github/matthias-da/robCompositions/src/R/pcaCoDa.R) from the `robCompostitions` package).
+
+The applied r function pcaCoDa() first do ilr transformation on the input matrix, then PCA (option for robust), and "back-transformed to the centred logratio transformation (clr) space in order to allow for an interpretation in terms of the original variable names".(Filzmoser et al. 2009).
+
+To do this, I will make use of said script to compute the PCs
+
+```{r obtain cell type PCs}
+#Take the absolute value of estimated cell type proportions because sometimes extremely small values can be estimated as negative, which is not actually possible for a proportion. This is the matrix of our compositional data. 
+CompMatrix <- abs(cell_counts_cord) 
+
+#Because some of the proportions can be estimated to be exactly 0, this is a problem for the log transformation. Therefore, for the values that are 0, we need to add a small offset.
+sum(CompMatrix==0) 
+CompMatrix <- (CompMatrix + 0.0001) 
+min(CompMatrix) 
+
+source("pcaCoDa_NG.R") #This is a slight change to the pcaCoDa code to more easily extract the components with appropriate rownames created by Drs. Sarah Merrill and Nicole Gladish. The mathematical functions of this code are identical to the pcaCoDa function from the robCompositions package.  
+
+pca_object <- pcaCoDa(CompMatrix)
+summary(pca_object)
+
+#Plot the PCA
+Loadings_ilr <- pca_object$loadings
+vars <- pca_object$princompOutputClr$sdev^2
+Importance<-vars/sum(vars) # proportion of variance per PC
+
+pca_df_ilr<-data.frame(variance=Importance, PC=seq(1:length(Importance)))
+
+# We see that the first 4 components explain >90% of the variance. The first component explains 40.80% of the variance in estimated cell type proportion.
+sum(pca_df_ilr$variance[1:4])
+
+ggplot(pca_df_ilr,aes(PC,variance))+
+  geom_bar(stat = "identity",color="black",fill="grey")+
+  theme_bw()+
+  theme(axis.text = element_text(size =10),
+        axis.title = element_text(size =12),
+        plot.margin=unit(c(1,1.5,0.2,2.25),"cm"))+ylab("Variance") +
+  ggtitle("PCA on ilr-transformed cell proportions") +
+  geom_text(aes(label = round(variance,3)), vjust = -0.2)
+
+
+#Pull the PC scores out of the pca_object
+CTP_ilrPCAScores <- as.data.frame(pca_object$scores) 
+#Rename your PCs before adding into your object
+colnames(CTP_ilrPCAScores) <- c("CellType_PC1", "CellType_PC2", "CellType_PC3", "CellType_PC4", "CellType_PC5", "CellType_PC6") 
+
+#Add PCs and estimated cellt ype proportion to the data frame 
+identical(rownames(CompMatrix), rownames(cell_counts_cord)) 
+cell_counts_IDOL_houseman_ilrRobustPCs <- inner_join(
+  CTP_ilrPCAScores %>% 
+    rownames_to_column(var = "Sample_Name"),
+  cell_counts_cord %>% 
+    rownames_to_column(var = "Sample_Name"),
+  by = "Sample_Name") %>% 
+  column_to_rownames(var = "Sample_Name")
+
+fwrite(cell_counts_IDOL_houseman_ilrRobustPCs, file = here("Objects/CellCountsIDOL_and_irlRobustPCs_CordBlood.csv"),
+       row.names = TRUE) 
+```
+
+### Continental genetic ancestry PCA
+```{r explore_PCA, warning=FALSE}
+#Load PCs, obtained from the analysis made by Marcia Jude
+gds <- snpgdsOpen("Objects/CHILD_1KG_merge_prunned.gds")
+
+# perform PCA
+pca <- snpgdsPCA(gds, num.thread=6)
+
+# Plot the variance proportion (%)
+data.frame(PC = as.factor(c(1:20)),
+           Variance = (pca$varprop*100)[1:20]) %>% 
+  ggplot(aes(x = PC, y = Variance)) +
+  geom_col()+
+  geom_text(aes(label = round(Variance,2)), vjust = -0.5) +
+  ylab("Variance(%)")+
+  theme_classic() 
+#As we can see in this plot, after the PC #4, the amount of variance explained is very little. Therefore, I will just explore the first 4 PCs to see if they capture at some degree the population stratification so that I can include them in the model. 
+
+#Explore the first 4 PCs using the data frame that Marcia has already created
+PCA_ancestry = readRDS("Objects/CHILD_1KG_PCA_meta.rds")
+head(PCA_ancestry)
+
+#Color blind palette got from: 
+#http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/
+#https://stackoverflow.com/questions/57153428/r-plot-color-combinations-that-are-colorblind-accessible
+
+#For reasons explained in the following section, I will be flagging some samples that are duplicated to see where they are. 
+duplicates_pca = PCA_ancestry %>% #change the format of the PCA data to merge it
+  filter(pop == "Sample") %>%
+  mutate(sample_merge =str_sub(Sample_Name,2,6)) %>% #Create a new column to merge
+  dplyr::select(sample_merge, EV1, EV2, EV3, EV4) %>% 
+  filter(duplicated(sample_merge) | duplicated(sample_merge, fromLast = TRUE)) %>% 
+  row.names()
+
+#Also, I will create a new data frame using the mom's ethnicity information so that I can check if the ethnicity falls mostly where we would expect in the genetic ancestry coordinates
+
+PCA_ancestry_plotting = PCA_ancestry %>% 
+  mutate(sample_merge = str_sub(Sample_Name,2,6)) %>%  #Create a new column to merge
+  left_join(sampleInfo %>% 
+              mutate(sample_merge = str_sub(Sample_Name,1,5)) %>% 
+              dplyr::select(c(sample_merge, ethnicity_mom)),
+            by = "sample_merge") %>% 
+  mutate(likely_ancestry = case_when(
+    (super_pop == "Sample" & ethnicity_mom == "Black") ~ "AFR", #Recode the ethnicities so that we have the same categories than in the GA coordinates
+    (super_pop == "Sample" & (ethnicity_mom == "First Nations" | ethnicity_mom == "Hispanic")) ~ "AMR",
+    (super_pop == "Sample" & ethnicity_mom == "East Asian" | ethnicity_mom == "South East Asian") ~"EAS", #I checkec on the PCAs and South East Asians are way more related gentically to EAS than to SAS
+    (super_pop == "Sample" & ethnicity_mom == "Caucasian White") ~ "EUR",
+    (super_pop == "Sample" & (ethnicity_mom == "South Asian" | ethnicity_mom == "Middle Eastern")) ~ "SAS",
+    (super_pop == "Sample" & TRUE) ~ "MULTI",
+    TRUE ~ as.character(super_pop))) %>% 
+  mutate(sample_origin = case_when(super_pop == "Sample"~"CHILD",
+                                     TRUE ~"1000G")) %>% 
+  arrange(sample_origin) # Put the 1000G at the beginning so that they are plotted first
+      
+
+#PCs 1 and 2
+PCA_ancestry_plotting %>% 
+  ggplot(aes(x = EV1, y = EV2, color = likely_ancestry)) +
+  geom_point(aes(shape= sample_origin), alpha = 0.5)+
+  theme_classic()+
+  scale_color_manual( values = c("#000000", "#E69F00", "#56B4E9", "#009E73", 
+                       "#F0E442", "#0072B2"))+
+  scale_shape_manual(values=c(3,16))+
+  geom_label_repel(data = PCA_ancestry_plotting %>% 
+                    filter(sample.id %in% duplicates_pca),
+                  aes(label = Sample_Name, x = EV1, y = EV2))
+
+#PCs 3 and 4
+PCA_ancestry_plotting %>% 
+  ggplot(aes(x = EV3, y = EV4, color = likely_ancestry)) +
+  geom_point(aes(shape= sample_origin), alpha = 0.5)+
+  theme_classic()+
+  scale_color_manual( values = c("#000000", "#E69F00", "#56B4E9", "#009E73", 
+                       "#F0E442", "#0072B2"))+
+  scale_shape_manual(values=c(3,16))+
+  geom_label_repel(data = PCA_ancestry_plotting %>% 
+                    filter(sample.id %in% duplicates_pca),
+                  aes(label = Sample_Name, x = EV3, y = EV4)) 
+
+#PCs 4 and 5 just to see how the PC5 looks like
+PCA_ancestry_plotting %>% 
+  ggplot(aes(x = EV4, y = EV5, color = likely_ancestry)) +
+  geom_point(aes(shape= sample_origin), alpha = 0.5)+
+  theme_classic()+
+  scale_color_manual( values = c("#000000", "#E69F00", "#56B4E9", "#009E73", 
+                       "#F0E442", "#0072B2"))+
+  scale_shape_manual(values=c(3,16))+
+  geom_label_repel(data = PCA_ancestry_plotting %>% 
+                    filter(sample.id %in% duplicates_pca),
+                  aes(label = Sample_Name, x = EV4, y = EV5))
+
+```
+
+After this exploration, I decided to use only the first 4 PCs to correct for population stratification, and concluded that overall, the continental genetic ancestry PC coordinates match with what we would expect based on the children's mother ethnicity. 
+
+## Adjusting DNAme levels for covariates
+
+### Design matrix
+
+First, we want to create the metadata object with the covariates of interest
+```{r }
+# While trying to merge the PCA data, I found out that there are 3 duplicated samples, so I will explore what's going on 
+PCA_ancestry %>% #change the format of the PCA data to merge it
+  filter(pop == "Sample") %>%
+  mutate(sample_merge =str_sub(Sample_Name,2,6)) %>% #Create a new column to merge
+  dplyr::select(sample_merge, EV1, EV2, EV3, EV4) %>% 
+  filter(duplicated(sample_merge) | duplicated(sample_merge, fromLast = TRUE)) %>% 
+  kableExtra::kable()
+
+#By checking the genotype QC, I can see that sample X-5 (in this case X)was previously identified as a sex mismatch in section 4.3 and was removed. So I will get rid of it. 
+#Sample Y shows almost identical values in EV1-4, so I will select the sample taken at 5 years old. I don't know exactly why it is not identical, but it might be because of some technical errors. 
+#Sample Z was not flagged in any QC step, and the results should be identical. I don't know why the coordinates are not exactly the same, just as sample Y. I thought about keeping the sample at 1 years old, since the sample at 5 years old might have for some reasons mutations that altered the coordinates, or have some technical errors. However, it is suspicious that the technical replicates do not cluster together, so I will remove that sample from the analysis. So I will exclude the sample as well. 
+
+```
+
+I will also remove the samples from children whom we dont have environmental exposure information to create the final metadata object 
+
+```{r design_matrix}
+#Create the metadata object 
+metadata = sampleInfo %>% 
+  dplyr::select(c(Sample_Name, Sex, Sample_Age_Days, Chip_Position, SubjectNumber)) %>% 
+  left_join( cell_counts_IDOL_houseman_ilrRobustPCs %>% #Reformat the cord blood cell type proportions to merge it
+              rownames_to_column(var = "Chip_Position"), 
+            by = "Chip_Position") %>% 
+  dplyr::select(-Chip_Position) %>% 
+  mutate(Sex = as.factor(Sex)) %>% 
+  mutate(sample_merge = str_sub(Sample_Name,1,5)) %>% #Create a new column to merge PCA
+  inner_join(PCA_ancestry %>% #change the format of the PCA data to merge it 
+              filter(pop == "Sample") %>%
+              filter(!Sample_Name %in% c("X",#Sample with almost identical coordinates. Keeping the non-cord blood sample
+                                          "Y",#Sample previously flagged in a QC
+                                          "Z", "Z")) %>% #Sample removed the replicates do not cluster together
+              mutate(sample_merge =str_sub(Sample_Name,2,6)) %>% #Create a new column to merge
+              dplyr::select(sample_merge, EV1, EV2, EV3, EV4),
+            by = "sample_merge") %>% 
+  dplyr::rename(GA_EV1 = EV1, GA_EV2 = EV2, GA_EV3 = EV3, GA_EV4 = EV4) %>% 
+  filter(!Sample_Name %in% flagged_samples_Age) %>% #Remove the samples previously detected with no age data
+  filter(!Sample_Name %in% removed_preterm) %>%  #Remove pre term samples
+  dplyr::select(-sample_merge) #remove the column created to merge
+
+## 790 samples at this point
+## Now I will remove the samples with no environmental information 
+metadata_environment = read.csv("Objects/prenatal_env_vmr_clean.csv")
+
+metadata = metadata %>% 
+  filter(SubjectNumber %in% metadata_environment$SubjectNumber)
+
+glimpse(metadata)
+#699 
+```
+
+### Remove probes in clock/IDOL/sexual chrom and explore M value vs B value
+```{r clock/IDOL removal and Mval vs Bval}
+#Subset the probes that are in sexual chromosomes for elimination in the future
+load("EPIC_fdat.RData") 
+sexual_probes = fData_EPIC %>% 
+  dplyr::select(TargetID, CHR) %>% 
+  dplyr::filter(CHR %in% c("X", "Y")) %>% 
+  dplyr::pull(TargetID)
+
+#Subset the probes used in the gestational clock (which are highly correlated with gestational age), and in the IDOL library used for cell type deconvolution (which are highly correlated with cell type proportions)
+#load clock probes
+#This file was borrowed from Dr Sarah Merrill and her analysis on APrON, where she calculated gestational epigenetic age using the Bohlin 2021 clock. 
+clock_probes = fread("Objects/Bohlin2021_clock_probes.csv", data.table = F) %>% 
+  filter(cpgs != "intercept") %>%  #Remove the intercept info 
+  pull(cpgs)
+
+#Compute the M values
+M_values_raw = Biobase::exprs(CHILD_cord) %>%
+  as.data.frame() %>% 
+  dplyr::select(metadata$Sample_Name)
+
+#Remove the CpG probes that are in sexual chromosomes, 
+M_values_raw = M_values_raw %>% 
+  filter(!row.names(M_values_raw) %in% sexual_probes,
+         !row.names(M_values_raw) %in% clock_probes,
+         !row.names(M_values_raw) %in% FlowSorted.Blood.EPIC::IDOLOptimizedCpGsCordBlood)
+
+dim(M_values_raw) #785689    712
+
+fwrite(M_values_raw, file = "/mnt/scratch/KoborLab/CHILD/enavarro/CHILD_birth/Objects/m_vals_raw.csv", row.names = TRUE)
+
+#Check that the M value matrix and the metadata is in the same order
+all(metadata$Sample_Name == colnames(M_values_raw)) #TRUE
+
+#Create the design matrix
+#I removed one cell type counts cause the proportions sum up to 1
+design <- model.matrix(~ Sex + Sample_Age_Days + CellType_PC1  +CellType_PC2  + 
+                          CellType_PC3 + CellType_PC4 + GA_EV1 + GA_EV2 + GA_EV3 + GA_EV4,
+                       data = metadata)
+```
+
+### Fitting the model
+```{r fitting_model}
+#Fit the model to my data using limma
+fit = lmFit(M_values_raw, design = design)
+
+#Get the corrected values
+corrected_mvals = M_values_raw -  fitted(fit)
+```
+
+## Session Info
+```{r session Infor}
+sessionInfo()
+```
+

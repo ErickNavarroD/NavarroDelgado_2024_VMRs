@@ -1,0 +1,792 @@
+---
+title: "Reduction of G information - experiment"
+author: "Erick I. Navarro-Delgado"
+date: '2022-09-25'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    keep_md: true
+---
+
+## Background 
+
+This document details one of the sensitivity analyses conducted to explore the factors that could impact the obtained results. 
+
+
+## Information imbalance 
+
+Here I will explore the effect of the information imbalance in the G and E components. In the main analysis of this project, I observed a smaller amount of VMRs being explained by E compared to the G component. This could be explained, at least in part, by the fact that the environment is measured in a less comprehensive way. To explore how the results cound be impacted by a reduction of information, I will reduce the information that we have for each VMR regarding SNPs. Then, for each VMR I will randomly select 10, 50, 100 and 500 SNPs and see how the proportion of winning models with a G component fluctuates. 
+
+```{r, eval=FALSE}
+#load packages
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+library(foreach)
+library(relaimpo)
+
+#load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+summarized_VMRs = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix() # imputed_genot_CHILD_gt_filtered
+
+environmental_matrix = read.csv("Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix() # prenatal_environment
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 12))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+for (rep in 1:4){
+  for (sample_n in c(10,100,500,1000)){
+    set.seed(rep*sample_n) # For some reason setting the seed outside of the for loop 
+    sampled_cis_snps = cis_snps %>% 
+      mutate(SNP = map(SNP, function (x) sample(x, min(sample_n, length(x)))))
+    
+    # Run RAMEN
+    selected_variables = RAMEN::selectVariables(VMR_df = sampled_cis_snps,
+                                                genotype_matrix = genotype_matrix,
+                                                environmental_matrix = environmental_matrix,
+                                                covariates = covariates,
+                                                summarized_methyl_VMR = summarized_VMRs,
+                                                seed = 1)
+    
+    lmGE_res = RAMEN::lmGE(selected_variables = selected_variables,
+                           summarized_methyl_VMR = summarized_VMRs,
+                           genotype_matrix = genotype_matrix,
+                           environmental_matrix = environmental_matrix,
+                           covariates = covariates,
+                           model_selection = "AIC")
+    
+    lmGE_res$sample_n = sample_n
+    lmGE_res$rep = rep
+    fwrite(lmGE_res, paste("post_hoc_analyses/output_info_imbalance/lmGEres_",sample_n, "_", rep , ".csv",sep = ""), row.names = FALSE)
+  }
+}
+
+
+```
+
+### Results exploration
+
+```{r}
+#Read the files
+library(tidyverse)
+library(data.table)
+library(here)
+library(knitr)
+library(cowplot)
+
+temp = list.files(path = here("VMRs/post_hoc_analyses/output_info_imbalance/"), pattern="\\.csv$", full.names = TRUE)
+res = do.call(rbind, lapply(temp, function(x) fread(x, stringsAsFactors = FALSE, data.table = FALSE)))
+
+thresholds_null_dR2 = read_csv(here("Objects/thresholds_null_dR2.csv"))
+
+
+#See the results in a table
+res %>% 
+  mutate(R2_difference = tot_r_squared - basal_rsquared,
+         pass_R2threshold_permutation = case_when(model_group %in% c("G","E") ~ R2_difference > thresholds_null_dR2$threshold[2],
+                                    model_group %in% c("GxE","G+E") ~ R2_difference > thresholds_null_dR2$threshold[1])) %>% 
+  filter(pass_R2threshold_permutation) %>% 
+  group_by(sample_n, rep) %>% 
+  summarise(E_prop = sum(model_group == "E")/n(),
+            G_prop = sum(model_group == "G")/n(),
+            G_E_prop = sum(model_group == "G+E")/n(),
+            GxE_prop = sum(model_group == "GxE")/n(),
+            E = sum(model_group == "E"),
+            G = sum(model_group == "G"),
+            G_E = sum(model_group == "G+E"),
+            GxE = sum(model_group == "GxE"),
+            models = n()) %>% 
+  knitr::kable()
+
+#Plot 
+# I decided not to use proportions when ploting because they can be misleading. For example, when sampling 10 SNPs, the proportion of G models seems to increase but because there are less models that pass the threshold. So, compared to any other scenario, there are less G winning models but the proportion seem to be high, which is misleading
+
+#I will replace the 1000 sample_n with the actual results I got 
+
+lmGE_res = fread(here("Objects/lmGE_res_delta_r2_filtered.csv"), data.table = FALSE) %>% 
+  mutate(variables = str_split(variables, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) |> 
+  mutate(sample_n = "All",
+         rep = 1)
+
+res_plot = res |> 
+  mutate(R2_difference = tot_r_squared - basal_rsquared,
+         pass_R2threshold_permutation = case_when(model_group %in% c("G","E") ~ R2_difference > thresholds_null_dR2$threshold[2],
+                                    model_group %in% c("GxE","G+E") ~ R2_difference > thresholds_null_dR2$threshold[1])) |> 
+  select(colnames(lmGE_res)) |> 
+  mutate(sample_n = as.character(sample_n)) |> 
+  rbind(lmGE_res)
+
+(plot_g_sampling = res_plot %>% 
+  filter(pass_R2threshold_permutation) %>% 
+  group_by(sample_n, rep) %>% 
+  summarise(E = sum(model_group == "E"),
+            G = sum(model_group == "G"),
+            G_E = sum(model_group == "G+E"),
+            GxE = sum(model_group == "GxE")) %>%
+  pivot_longer(-c(sample_n, rep), names_to = "model", values_to = "counts") %>% 
+  group_by(sample_n, rep) %>% 
+  mutate(n_models = sum(counts)) %>% 
+  group_by(sample_n, model) %>% 
+  summarise(mean_prop = mean(counts/n_models),
+            sd_prop = sd(counts/n_models),
+            mean_counts = mean(counts),
+            sd_counts = sd(counts)) %>% 
+  mutate(sample_n = factor(sample_n, levels = c("All", "1000", "500", "100", "10")),
+         model = case_when(model == "G_E" ~ "G+E",
+                           TRUE ~ model)) %>% 
+  ggplot(aes(x = sample_n, y = mean_counts, 
+             color = model, group = model )) + #For geom_line
+  geom_point()+
+  geom_errorbar(aes(ymin = mean_counts - sd_counts,
+                    ymax = mean_counts + sd_counts), width = 0.5) +
+  xlab("Sampled SNPs") +
+  ylab("counts")+
+  geom_line() + 
+  theme_cowplot() +
+  scale_color_manual(values=c("E" = "#53579c", "G" = "#f06b22", "G+E" = "#ccc5be", "GxE" = "#FAD48D")))
+
+png(here("Objects/images/plot_g_sampling.png"), units="in", width=5, height=4, res=300)
+print(plot_g_sampling)
+dev.off()
+
+```
+
+These results suggest that we might be underestimating the role of the environment due to the lack of established protocols to capture comprehensively the exposome. 
+
+## Variable imbalance effect on results
+
+I wonder if, since G has a higher number of variables, by chance G has also more winning models. To dissect the pure effect of having more variables, irrespective to having a more frequent biological association, I explored this in  randomized scenarios. In these cases, since all of the associations are at random, we expect the differences in genome and exposome to be mainly driven by the variable imbalance. 
+
+```{r}
+permutated_datasets = rbind(
+  read.csv(here("VMRs/post_hoc_analyses/permutated_results_1.csv")), #Coming from RAMEN::nullDistGE() in VMR_4
+  read.csv(here("VMRs/post_hoc_analyses/permutated_results_2.csv")) %>% 
+    mutate(permutation = permutation + 5))
+
+permutated_datasets %>% 
+  mutate(permutation = as.factor(permutation)) %>% 
+  ggplot(aes(x = model_group, fill = permutation)) +
+  geom_bar(position = "dodge") +
+  theme_cowplot()
+
+permutated_datasets %>% 
+  mutate(permutation = as.factor(permutation)) %>% 
+  group_by(permutation, model_group) %>% 
+  summarize( n = n()) %>% 
+  group_by(permutation) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  arrange(model_group)
+
+# The proportions seem very similar in the table and plotted. Then I will just use the mean to summarize them and get the proportion of winning models that we obtain in a randomized dataset 
+
+permutated_datasets %>% 
+  mutate(permutation = as.factor(permutation)) %>% 
+  group_by(permutation, model_group) %>% 
+  summarize( n = n()) %>% 
+  group_by(permutation) %>% 
+  mutate(prop = n/sum(n)) %>% 
+  group_by(model_group) %>% 
+  summarise(mean_prop = mean(prop)) %>% 
+  arrange(model_group) 
+  
+```
+
+Interestingly, despite the difference in the number of variables in G and E, my method seems to be quite robust to these differences. We observe a bias in my method towards selecting G models though. 
+
+**Conclusion: having a higher number of variables in one of these factors (G or E) increases its chances of being a winner model, even though it is alleviated with the variable selection step.**
+
+### Track variable-imbalance effect on the results
+
+Since we can see that any randomized data behaves similarly to the others, I will pick the first iteration of that permutation to explore it a bit further. Specifically, I want to track where does the variable-imbalance problem originates. 
+I will start with the first randomized dataset. 
+
+```{r, eval=FALSE}
+#Load libraries
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+library(foreach)
+library(relaimpo)
+library(stringr)
+
+#Load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+summarized_VMRs = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix() # imputed_genot_CHILD_gt_filtered
+
+environmental_matrix = read.csv("Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix() # prenatal_environment
+
+#Put the environmental and genotype matrix in the same order to the summarized VMR object 
+genotype_matrix = genotype_matrix[,rownames(summarized_VMRs)]
+environmental_matrix = environmental_matrix[rownames(summarized_VMRs),]
+
+#### Permutate ####
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 8))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+#get permutation order 
+set.seed(98)
+permutation_order = data.frame(sample(rownames(summarized_VMRs), 
+                       size = length(rownames(summarized_VMRs))))
+
+#for loop starts
+i = 1
+  
+permutated_genotype = genotype_matrix[,permutation_order[,i]]
+rownames(permutated_genotype) = rownames(genotype_matrix)
+colnames(permutated_genotype) = colnames(genotype_matrix)
+permutated_environment = environmental_matrix[permutation_order[,i],]
+colnames(permutated_environment) = colnames(environmental_matrix)
+rownames(permutated_environment) = rownames(environmental_matrix)
+  
+  # Run RAMEN
+selected_variables_perm_1 = RAMEN::selectVariables(VMR_df = cis_snps,
+                              genotype_matrix = permutated_genotype,
+                              environmental_matrix = permutated_environment,
+                              covariates = covariates,
+                              summarized_methyl_VMR = summarized_VMRs,
+                              seed = 1)
+  
+lmGE_res_perm_1 = RAMEN::lmGE(selected_variables = selected_variables_perm_1,
+                       summarized_methyl_VMR = summarized_VMRs,
+                       genotype_matrix = permutated_genotype,
+                       environmental_matrix = permutated_environment,
+                       covariates = covariates,
+                       model_selection = "AIC")
+  
+
+fwrite(selected_variables_perm_1, "VMRs/post_hoc_analyses/selected_variables_perm_1.csv") 
+fwrite(lmGE_res_perm_1, "VMRs/post_hoc_analyses/lmGE_res_perm_1.csv") 
+
+```
+
+I want to see the effect of having a different number of variables in selectVariables and then lmGE. Since I shuffled the G and E components, they should be noise data when it comes to explain VMRs DNAme. Also, since the E variables are standardized, they should be pretty comparable to genotyping variables. So, given the fact that both G and E are randomly associated with DNAme, they should have similar chances to be in a winning model. 
+Therefore, if *selectVariables()* is insensitive to a difference in variables, since both G and E are randomized data, the distribution of both of them will be similar. 
+
+```{r}
+selected_variables_perm_1 = fread(here("VMRs/post_hoc_analyses/selected_variables_perm_1.csv"), data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+
+lmGE_res_perm_1 = fread(here("VMRs/post_hoc_analyses/lmGE_res_perm_1.csv"), data.table = FALSE) %>% 
+  mutate(VMR_index = as.character(VMR_index),
+         variables = str_split(variables, pattern = "\\|"))
+
+cis_snps = read.csv("/mnt/scratch/KoborLab/CHILD/enavarro/CHILD_birth/Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+selected_variables_perm_1 = selected_variables_perm_1 %>% 
+  left_join(cis_snps %>% 
+              select(c(VMR_index,n_VMPs)),
+            by = "VMR_index")
+
+selected_vars_perm_annot = selected_variables_perm_1 %>% 
+  transmute(VMR_index = VMR_index,
+            genome = lengths(selected_genot),
+            exposome = lengths(selected_env),
+            genome = case_when(selected_genot %in% list("") ~ 0,
+                                     TRUE ~ genome),
+            exposome = case_when(selected_env %in% list("") ~ 0,
+                                     TRUE ~ exposome)) %>% 
+  pivot_longer(-c(VMR_index)) %>% 
+  rename(group = name,
+         variables = value)
+
+#Get summary statistics
+selected_vars_perm_annot |>  
+  group_by(group) |> 
+  summarize(mean = mean(variables),
+            sd = sd(variables),
+            median = median(variables),
+            max = max(variables))
+
+selected_vars_perm_annot %>% 
+  mutate(variables = variables + 0.01) %>% #Since most of the values are around 0-10, I will log transform to see the behaviour of the data in this area
+  ggplot(aes(x = group, y = variables)) +
+  geom_violin() + 
+  geom_boxplot(width=0.1, outlier.shape=NA) +
+  geom_signif(comparisons = list(c("environment", "genotype")), test = "wilcox.test") +
+  scale_y_log10() +
+  cowplot::theme_cowplot() +
+  ggtitle("Selected variables") +
+  labs(y = "log10(selected_variables + 0.01)",caption = "wilcoxon test")
+
+
+#Get that figure for the supplementary
+(supp_perm_selection = selected_vars_perm_annot %>% 
+  mutate(variables = variables + 0.01) %>% #Since most of the values are around 0-10, I will log transform to see the behaviour of the data in this area
+  ggplot(aes(x = variables)) +
+  facet_grid("group")+
+  geom_histogram(fill = "grey70")+ 
+  theme_cowplot() +
+  labs(x = "Selected variables"))
+
+png(here("Objects/images/var_selection_permutated.png"),
+    units="in", width=4, height=3, res=300)
+print(supp_perm_selection)
+dev.off()
+
+table(selected_vars_perm_annot$group)
+
+```
+
+We can see that the tail of G is longer. This makes sense because G has way more variables, so just by number of variables it can have VMRs with a high number of variables selected. I mean that there is a limit in the number of E variables that can be selected, which is determined by max(E). I will see what is the median difference, which is a good way to compare irrespective of those outliers. 
+
+```{r}
+selected_vars_perm_annot %>% 
+  group_by(group) %>% 
+  summarise(median = median(variables))
+
+selected_variables_perm_1 %>% 
+  transmute(genotype = lengths(selected_genot),
+            environment = lengths(selected_env),
+            genotype = case_when(selected_genot %in% list("") ~ NA_real_,
+                                     TRUE ~ genotype),
+            environment = case_when(selected_env %in% list("") ~ NA_real_,
+                                     TRUE ~ environment)) %>% 
+  select(genotype, environment) %>% 
+  mice::md.pattern(rotate.names = TRUE)
+
+```
+
+So we can see that both of them have the same median (0). Which makes sense because the data is randomly chosen. 
+
+Overall, in a scenario of equal conditions (randomized data), selectVariables is pretty insensitive to variable imbalance (median). However, the distribution is different because G has a wider range and therefore higher potential ceiling of variables
+
+**Conclusion: selectVariables mitigates the variable imbalance (a different thing to information imbalance)**
+
+I observe that the number of of cases when there is no E selected happens more often compared to when G is not selected (6676 vs 5062). Could the bias in lmGE be because of this? If that is the case, in competition-winning models, lmGE would have an equal number of E and G winning models, and the higher proportion of G models observed would be due to the bias created in selectVariables()
+
+```{r}
+lmGE_perm_annot = lmGE_res_perm_1 %>% 
+  mutate(winning_mode = case_when(is.na(delta_aic) ~ "Default winning",
+                                      TRUE ~ "Competition winning"))
+
+lmGE_perm_annot %>% 
+  group_by(winning_mode ,model_group) %>% 
+  summarize(n = n()) 
+```
+
+As described before, when selectVariables selects both G and E, G+E/GxE models will win. So, we can conclude that lmGE is sensitive to the variable imbalance produced in selectVariables(). 
+
+Then, if selectVariables() produced a balanced dataset, would lmGE produce a scenario of G and E being equally likely to win? 
+
+I will run again the analysis on the permutated dataset but starting from a dataset that also downsizes the number of G variables to match E 
+
+```{r, eval = FALSE}
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+library(foreach)
+library(relaimpo)
+library(stringr)
+
+#Load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+summarized_VMRs = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix() # imputed_genot_CHILD_gt_filtered
+
+environmental_matrix = read.csv("environmental_data_cleaning/Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix() # prenatal_environment
+
+#Put the environmental and genotype matrix in the same order to the summarized VMR object 
+genotype_matrix = genotype_matrix[,rownames(summarized_VMRs)]
+environmental_matrix = environmental_matrix[rownames(summarized_VMRs),]
+
+#### Permutate ####
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 8))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+#get permutation order 
+set.seed(98)
+permutation_order = data.frame(sample(rownames(summarized_VMRs), 
+                       size = length(rownames(summarized_VMRs))))
+
+#for loop starts
+i = 1
+
+permutated_genotype = genotype_matrix[,permutation_order[,i]]
+colnames(permutated_genotype) = colnames(genotype_matrix)
+rownames(permutated_genotype) = rownames(genotype_matrix)
+permutated_environment = environmental_matrix[permutation_order[,i],]
+colnames(permutated_environment) = colnames(environmental_matrix)
+rownames(permutated_environment) = rownames(environmental_matrix)
+
+set.seed(1)
+sampled_cis_snps = cis_snps %>% 
+  filter(surrounding_SNPs >= ncol(environmental_matrix)) %>% # Remove VMRs with less cisSNPs than E variables  
+  mutate(SNP = map(SNP, function (x) sample(x, ncol(environmental_matrix))))
+#28346 VMRs with those conditions
+
+  # Run RAMEN
+selected_variables_perm_1_downsizedG = RAMEN::selectVariables(VMR_df = sampled_cis_snps,
+                              genotype_matrix = permutated_genotype,
+                              environmental_matrix = permutated_environment,
+                              covariates = covariates,
+                              summarized_methyl_VMR = summarized_VMRs,
+                              seed = 1)
+  
+lmGE_res_perm_1_downsizedG = RAMEN::lmGE(selected_variables = selected_variables_perm_1_downsizedG,
+                       summarized_methyl_VMR = summarized_VMRs,
+                       genotype_matrix = permutated_genotype,
+                       environmental_matrix = permutated_environment,
+                       covariates = covariates,
+                       model_selection = "AIC")
+  
+
+fwrite(selected_variables_perm_1_downsizedG, "VMRs/post_hoc_analyses/selected_variables_perm_1_downsizedG.csv") 
+fwrite(lmGE_res_perm_1_downsizedG, "VMRs/post_hoc_analyses/lmGE_res_perm_1_downsizedG.csv") 
+    
+```
+
+After running that, I will explore the results
+
+```{r}
+
+selected_variables_perm_1_downsizedG = fread( "VMRs/post_hoc_analyses/selected_variables_perm_1_downsizedG.csv", data.table = FALSE) %>% 
+  mutate(selected_genot = str_split(selected_genot, pattern = "\\|"),
+         selected_env =str_split(selected_env, pattern = "\\|"),
+         VMR_index = as.character(VMR_index))
+lmGE_res_perm_1_downsizedG = fread( "VMRs/post_hoc_analyses/lmGE_res_perm_1_downsizedG.csv", data.table = FALSE) %>% 
+  mutate(VMR_index = as.character(VMR_index),
+         variables = str_split(variables, pattern = "\\|"))
+
+
+# See the distribution of selected variables
+selected_variables_perm_1_downsizedG %>% 
+  transmute(VMR_index = VMR_index,
+            genotype = lengths(selected_genot),
+            environment = lengths(selected_env),
+            genotype = case_when(selected_genot %in% list("") ~ 0,
+                                     TRUE ~ genotype),
+            environment = case_when(selected_env %in% list("") ~ 0,
+                                     TRUE ~ environment)) %>% 
+  pivot_longer(-c(VMR_index)) %>% 
+  rename(group = name,
+         variables = value) %>% 
+  mutate(variables = variables + 0.01) %>% #Since most of the values are around 0-10, I will log transform to see the behaviour of the data in this area
+  ggplot(aes(x = group, y = variables)) +
+  geom_violin() + 
+  geom_boxplot(width=0.1, outlier.shape=NA) +
+  geom_signif(comparisons = list(c("environment", "genotype")), test = "wilcox.test") +
+  scale_y_log10() +
+  cowplot::theme_cowplot() +
+  ggtitle("Selected variables") +
+  labs(y = "log10(selected_variables + 0.01)",caption = "wilcoxon test")
+
+#They are significantly different but the distributions look exactly the same 
+
+selected_variables_perm_1_downsizedG %>% 
+  transmute(VMR_index = VMR_index,
+            genome = lengths(selected_genot),
+            exposome = lengths(selected_env),
+            genome = case_when(selected_genot %in% list("") ~ 0,
+                                     TRUE ~ genome),
+            exposome = case_when(selected_env %in% list("") ~ 0,
+                                     TRUE ~ exposome)) %>% 
+  pivot_longer(-c(VMR_index)) %>% 
+  rename(group = name,
+         variables = value) %>% 
+  group_by(group) %>% 
+  summarise(median = median(variables), 
+            mean = mean(variables),
+            sd = sd(variables),
+            quant25 = quantile(variables, 0.25),
+            quant75  = quantile(variables, 0.75),
+            max = max(variables))
+
+#Get that figure for the supplementary
+(supp_perm_selection_down = selected_variables_perm_1_downsizedG %>% 
+    transmute(VMR_index = VMR_index,
+            genome = lengths(selected_genot),
+            exposome = lengths(selected_env),
+            genome = case_when(selected_genot %in% list("") ~ 0,
+                                     TRUE ~ genome),
+            exposome = case_when(selected_env %in% list("") ~ 0,
+                                     TRUE ~ exposome)) %>% 
+  pivot_longer(-c(VMR_index)) %>% 
+  rename(group = name,
+         variables = value) |> 
+  mutate(variables = variables + 0.01) %>% #Since most of the values are around 0-10, I will log transform to see the behaviour of the data in this area
+  ggplot(aes(x = variables)) +
+  facet_grid("group")+
+  geom_histogram(fill = "grey70")+ 
+  theme_cowplot() +
+  labs(x = "Selected variables"))
+
+png(here("Objects/images/var_selection_permutated_down.png"),
+    units="in", width=4, height=3, res=300)
+print(supp_perm_selection_down)
+dev.off()
+
+table(selected_vars_perm_annot$group)
+```
+
+We can see that even though the statistical test says they are different, it is a result that is driven by the large n - the distributions are almost exactly the same! 
+
+Now let's see how lmGE behaves
+
+```{r}
+lmGE_res_perm_1_downsizedG %>% 
+  ggplot(aes(x = model_group)) +
+  geom_bar() +
+  geom_text(aes(label = after_stat(count)), stat = "count", vjust = 1.5, colour = "white") +
+  theme_cowplot()
+```
+
+Difference in winning-model proportions is  eliminated in variable-balanced datasets (based on 1 observation). I will run it in 5 more permutated datasets to validate this exploration.
+
+```{r, eval=FALSE}
+library(future)
+library(tidyverse)
+library(RAMEN)
+library(data.table)
+library(doFuture)
+library(foreach)
+library(relaimpo)
+
+#Load data
+covariates = read.csv("Objects/metadata_cord_blood_env_filter.csv") %>% 
+  dplyr::select(-c(Sample_Name, CD8T, CD4T, NK, Bcell, Mono, Gran, nRBC)) %>% 
+  mutate(Sex = case_when(Sex == "f" ~ 1,
+                         Sex == "m" ~ 0)) %>%
+  dplyr::rename(sex_f = Sex) %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #Standardize
+  data.matrix()
+
+cis_snps = read.csv("Objects/cis_snps_VMRdf.csv") %>% 
+  mutate(probes = str_split(probes, pattern = "\\|"),
+         SNP =str_split(SNP, pattern = "\\|"),
+         VMR_index = as.character(VMR_index)) 
+
+summarized_VMRs = fread( file = "Objects/summarized_VMRs.csv", data.table = FALSE, header = TRUE) %>% 
+  mutate(V1 = str_sub(V1, end = -3)) %>% 
+  column_to_rownames(var = "V1")
+
+genotype_matrix = fread("Objects/imputed_genot_CHILD_gt_filtered.csv", data.table = F , header = TRUE) %>% 
+  as.data.frame() %>% 
+  column_to_rownames(var = "V1") %>% 
+  data.matrix() # imputed_genot_CHILD_gt_filtered
+
+environmental_matrix = read.csv("environmental_data_cleaning/Objects/prenatal_env_vmr_clean.csv") %>% 
+  column_to_rownames("SubjectNumber") %>% 
+  mutate_all(~(scale(.) %>% as.vector)) %>% #standardize
+  data.matrix() # prenatal_environment
+
+#Put the environmental and genotype matrix in the same order to the summarized VMR object 
+genotype_matrix = genotype_matrix[,rownames(summarized_VMRs)]
+environmental_matrix = environmental_matrix[rownames(summarized_VMRs),]
+
+
+doFuture::registerDoFuture()   # Set the parallel backend
+future::plan(multisession)
+future::plan(tweak(multisession, workers = 10))     # Set the evaluation strategy
+options(future.globals.maxSize= +Inf)
+
+#get permutation order 
+set.seed(98)
+permutation_order = data.frame(sample(rownames(summarized_VMRs), 
+                                      size = length(rownames(summarized_VMRs))))
+for (i in 1:4){
+  permutation_order= cbind(permutation_order,
+                           data.frame(sample(rownames(summarized_VMRs), 
+                                             size = length(rownames(summarized_VMRs)))))
+}
+colnames(permutation_order) = 1:5
+
+#for loop starts
+for (i in 1:5){
+  #Shuffle the datasets
+  permutated_genotype = genotype_matrix[,permutation_order[,i]]
+  colnames(permutated_genotype) = colnames(genotype_matrix)
+  permutated_environment = environmental_matrix[permutation_order[,i],]
+  colnames(permutated_environment) = colnames(environmental_matrix)
+  
+  set.seed(i)
+  sampled_cis_snps = cis_snps %>% 
+    filter(surrounding_SNPs >= ncol(environmental_matrix)) %>% # Remove VMRs with less cisSNPs than E variables  
+    mutate(SNP = map(SNP, function (x) sample(x, ncol(environmental_matrix))))
+  
+  # Run RAMEN
+  selected_variables_downsizedG = RAMEN::selectVariables(VMR_df = sampled_cis_snps,
+                                                                genotype_matrix = permutated_genotype,
+                                                                environmental_matrix = permutated_environment,
+                                                                covariates = covariates,
+                                                                summarized_methyl_VMR = summarized_VMRs,
+                                                                seed = 1)
+  
+  lmGE_res_downsizedG = RAMEN::lmGE(selected_variables = selected_variables_downsizedG,
+                                           summarized_methyl_VMR = summarized_VMRs,
+                                           genotype_matrix = permutated_genotype,
+                                           environmental_matrix = permutated_environment,
+                                           covariates = covariates,
+                                           model_selection = "AIC")
+  
+  fwrite(lmGE_res_downsizedG, paste("VMRs/post_hoc_analyses/downsizedG_reps/lmGE_downsizedG",  "_", i , ".csv",sep = ""), row.names = FALSE)
+  
+}
+
+```
+
+After running the above script on GPCC, I will explore the results in this Rmd. 
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(here)
+library(ggsignif)
+
+temp = list.files(path = here("VMRs/post_hoc_analyses/downsizedG_reps"), pattern="\\.csv$", full.names = TRUE)
+res_downsize = do.call(rbind, lapply(temp, function(x) {
+  fread(x, stringsAsFactors = FALSE, data.table = FALSE) %>% 
+    mutate(rep = str_sub(x, -5,-5)) #Add the number of rep 
+  }))
+
+
+# Do all of the reps create the same number of models?
+res_downsize %>% 
+  group_by(rep) %>% 
+  summarise(n = n()) %>% 
+  ggplot(aes(x = rep, y = n)) +
+  geom_col() + 
+  geom_text(aes(label = n), vjust = 1.5, colour = "white") +
+  theme_cowplot() +
+  ylab("Number of models")
+#Yes 
+
+x=res_downsize %>% 
+  mutate(model_group = as.factor(model_group))
+
+#Let's plot them
+res_downsize %>% 
+  group_by(model_group, rep) %>% 
+  summarise(count = n()) %>% 
+  group_by(rep) %>% 
+  mutate(proportion = count/sum(count)) %>% 
+  ggplot(aes(x = model_group, y = count)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(alpha = 0.4) +
+  ylim(0,7000)+
+  theme_cowplot() +
+  geom_signif(comparisons = split(t(combn(levels(x$model_group), 2)), seq(nrow(t(combn(levels(x$model_group), 2))))),
+              test = "t.test",
+              step_increase = 0.12) +
+  labs(caption = "t-test; n = 5")
+
+res_downsize %>% 
+  group_by(model_group, rep) %>% 
+  summarise(count = n()) %>% 
+  group_by(rep) %>% 
+  mutate(proportion = count/sum(count)) %>% 
+  ggplot(aes(x = model_group, y = proportion)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(alpha = 0.4) +
+  ylim(0,0.4)+
+  theme_cowplot() +
+  geom_signif(comparisons = split(t(combn(levels(x$model_group), 2)), seq(nrow(t(combn(levels(x$model_group), 2))))),
+              test = "t.test",
+              step_increase = 0.12) +
+  labs(caption = "t-test; n = 5")
+
+#So they are not significantly different (G and E; p > 0.05). By how much?
+(mean_res_downsizeG = res_downsize %>% 
+  group_by(model_group, rep) %>% 
+  summarise(count = n()) %>% 
+  group_by(rep) %>% 
+  mutate(proportion = count/sum(count)) %>%
+  group_by(model_group) %>% 
+  summarise(mean = mean(proportion),
+            sd = sd(proportion)))
+
+mean_res_downsizeG[1,2] - mean_res_downsizeG[2,2]
+
+```
+
+**Conclusion: Difference in winning-model proportions is eliminated in variable-balanced data sets with randomized data. There is a small difference between G and E winning model proportions (0.00939553). I think that this difference might arise from the nature of the E variables. Genotyping variables can be only 0,1 and 2, while E variables are standardized and have a wider range. I hypothesize that this small difference in proportions is due to variables with a bigger range having more likelihood by chance to explain the outcome. However, the results are more balanced.**
+
