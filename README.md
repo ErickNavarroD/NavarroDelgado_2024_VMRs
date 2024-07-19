@@ -1,4 +1,4 @@
-# Manuscript analyses
+# Manuscript analyses from Navarro-Delgado E., et al.(2024)
 
 This repository contains the code used for all the analyses in Navarro-Delgado E., et al., 2024. Said manuscript details the modeling of the genome and exposome contribution to methylome variability in cord blood. 
 
