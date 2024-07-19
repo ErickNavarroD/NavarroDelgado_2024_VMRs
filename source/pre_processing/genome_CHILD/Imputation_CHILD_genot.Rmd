@@ -1,0 +1,394 @@
+---
+title: "CHILD Genotype Imputation"
+author: "Erick I. Navarro-Delgado"
+date: "Dec/2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# Introduction
+
+This document details the imputation of the CHILD genotyping data. This data was previously preprocessed by Karlie Edwards and me (Erick I. Navarro-Delgado).
+
+To conduct the imputation, we are using the pipeline used by the [Michigan Imputation Server](https://imputationserver.sph.umich.edu), which is a workflow based on Minimac4, and executed with the [Cloudgene workflow system](https://github.com/genepi/cloudgene) for Hadoop MapReduce. Michigan Imputation Server consists of several parallelized pipeline steps:
+
+-   Quality Control
+-   QC Report
+-   Phasing and Imputation
+-   Compression and Encryption
+
+The documentation is available at <http://imputationserver.readthedocs.io>.
+
+It is worth mentioning that because of privacy matters, we cannot use the server (our data can't leave the Kobor lab cluster). Also, Maggie contacted IT and they said that we couldn't use the Docker image that the MIS provides. Therefore, we had to use a singularity [image](https://github.com/HippocampusGirl/ImputationProtocol) developed by the [ENIGMA consortium](https://enigma.ini.usc.edu), hosted by the University of Southern Caroline. The detailed steps of this pipeline can be found [here](https://enigma.ini.usc.edu/wp-content/uploads/2020/02/ENIGMA-1KGP_p3v5-Cookbook_20170713.pdf)
+
+**Acknowledgments:** The pre-processing code is inspired by a script made by Fizza Fatima and Maggie P Fu.
+
+# Creating files for imputation
+
+## Load libraries
+
+```{r load libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+library(GWASTools)
+library(SNPRelate)
+
+```
+
+## Load data
+
+For this step, we need the following files:
+
+-   SNP_Genotype.csv: A table containing the genotype of each sample, with the individuals as columns. The first column has the SNP name.
+-   SNPTable_filtered_Before_PLINK_Filtering.csv: File containing the SNP statistics of the probes that passed all the QC controls before prunning
+-   Manifest of the genotyping array. 
+-   Loci Name to rsIDs files: We need rsIDs for imputation, so I will use the file that Illumina provides. For the GSA array, the file is in the [support files](https://support.illumina.com/array/array_kits/infinium-global-screening-array/downloads.html), in the "Loci Name to rsID Conversion" file. For the psych array, the file is [here](https://support.illumina.com/array/array_kits/infinium-psycharray-beadchip-kit/downloads.html).
+
+```{r load data}
+#Load genotypes
+genotype = fread("Objects/SNPs_Genotype.csv", data.table = F)
+
+# Remove Samples that did not pass the QC
+genotype = genotype %>% 
+  select(-c("X","Y",
+            "Z")) # A sample from the individuals with a genotype replicate
+
+# Load SNP statistics 
+snps = fread("Objects/data.csv") 
+```
+
+```{r create manifest, eval=FALSE}
+# Load array manifest
+manifest = fread("Manifest_GSA_24v3_Psych_24v1_GRC37.csv", data.table = FALSE)
+
+#Load Loci Name to rsIDs objects
+rsIDs_GSA = read_tsv("GSA-24v3-0_A1_b151_rsids.txt", show_col_types = FALSE)
+rsIDs_psych = read_tsv("InfiniumPsychArray-24v1-3_A1_b150_rsids.txt", show_col_types = FALSE)
+
+#Create a single rsIDs object
+rsIDs_hybrid = bind_rows(rsIDs_GSA, 
+                         rsIDs_psych %>% 
+                           filter(!Name %in% rsIDs_GSA$Name))
+
+#Add the RsID to the manifest
+manifest = left_join(manifest,rsIDs_hybrid, by = "Name") 
+rm(rsIDs_GSA, rsIDs_psych, rsIDs_hybrid)
+
+
+manifest = manifest %>% 
+  mutate(Allele_A = substring(SNP,2,2),
+         Allele_B = substring(SNP,4,4),
+         Allele.A.Plus = Allele_A,
+         Allele.B.Plus = Allele_B)
+
+# Convert -strand alleles to +strand
+complement_DNA = c("A" = "T", "C" = "G", "T" = "A", "G" = "C", "I" = "D", "D"= "I")
+for(probe in 1:nrow(manifest)){
+   if(manifest[probe,"RefStrand"] =="-"){
+     manifest[probe,"Allele.A.Plus"] = complement_DNA[manifest[probe,"Allele_A"]]
+     manifest[probe,"Allele.B.Plus"] = complement_DNA[manifest[probe,"Allele_B"]]
+    } 
+}
+
+fwrite(manifest, "GSA_24v3_Psych_24_v1_GRCh37_with_rsIDs_manifest.csv")
+```
+
+## SNP filtering
+
+In this step, we are supposed to filter the SNPs based on Call Frequency, Minor Allele Frequency and ChiTest100. These steps were conducted in the QC, so they are not supposed to make any change. I will make the filters again, but they did not make any change (which I checked). By running these filters again, the only probes that will be filtered out will be the ones in non-somatic chromosomes (since these filters were not applied to them in the QC, because those metrics don't make sense for these chromosomes). Anyways, we will also filter out probes in non-somatic chromosomes. We're also following standard lab probe filtering steps and MAF \> 0.01 (recommended by developers of Minimac <https://genome.sph.umich.edu/wiki/MaCH_FAQ>)
+
+```{r SNP filtering}
+#Remove probes that do not pass the thresholds
+snps = snps %>% 
+  filter(Call.Freq > 0.97, # SNP call rate >= 0.97
+         Minor.Freq > 0.01, # MAF >= 0.01
+         ChiTest100 > 10e-6, # HWE
+         !Chr %in% c("X","Y","XY","MT")) # Remove probes on sex chromosomes and MT
+
+# Subset genotype matrix to the ones meeting the thresholds
+genotype = genotype %>% 
+  filter(SNP.Name %in% snps$Name)
+```
+
+## Recode allele
+
+There are possible values stored in the input genotype matrix: - 0, 1, 2 and other values. - "0" indicates two B alleles, "1" indicates one A allele and one B - "2" indicates two A alleles, and other values indicate a missing genotype.
+
+```{r recode alleles}
+genotype = genotype %>%  
+  column_to_rownames(var = "SNP.Name") 
+
+# Convert SNP matrix to numeric
+genotype_num = genotype %>% 
+  mutate(across(everything(), ~ case_when(.x == "AA" ~ 2,
+                                          .x == "AB" ~ 1,
+                                          .x == "BB" ~ 0,
+                                          TRUE ~ NA_real_)))
+
+rm(genotype)
+```
+
+## Remove non-ATCG SNPs and convert -strand to +strand
+
+Illumina arrays have non-ACTG SNPs that are encoded as I and D. They refer to insertions and deletions. We will remove them from our data set.
+
+```{r remove nonATCG SNPs}
+all(rownames(genotype_num) %in% manifest$Name) #TRUE
+#Subset the manifest only to the ones in our dataset
+manifest = manifest %>% 
+  filter(Name %in% rownames(genotype_num))
+
+#Make the manifest and genotype rows match 
+genotype_num <- genotype_num[manifest$Name, ]
+
+manifest = manifest %>% 
+  filter(!Allele_A %in% c("NULL","I","D")) # remove non-ACTG SNPs
+
+manifest = manifest %>% 
+  mutate(Chr = as.character(Chr)) %>% #Just make sure it is a character
+  filter(Chr != "0", #Remove probes in the chromosome 0
+         !is.na(RsID), #Remove probes with no RsID; this step is optional 
+         RsID != ".") 
+```
+
+Note of what chromosome 0 means: During manifest creation, the probe sequence is mapped to the genome build notated in the GenomeBuild column in the manifest. The SNP or indel coordinate is then recorded in the MapInfo column. If a marker is annotated with Chr = 0 or MapInfo = 0 in the manifest, there are two possible explanations:
+
+-   No valid mapping for the probe.
+
+-   More than 1 best-scoring mapping for the probe.
+
+**How do I find out why a probe is mapped to Chr 0?**
+
+For loci assigned a zero for Chr/MapInfo in the manifest, refer to the Mapping Comments file found in the product support files at Illumina.com. This file provides the reason for the notation:
+
+-   Blank - There were no complications in mapping the location of the variant.
+-   No probe mappings -- The Chr and MapInfo fields in the manifest have been set to 0, as no valid alignments were identified for the probe sequence in the updated genome build.
+-   Multiple mappings -- The Chr and MapInfo fields in the manifest have been set to 0, as multiple best scoring alignments were identified for the probe sequence. The locations of the multiple mappings are supplied as a semi-colon delimited list.
+
+```{r filter probes}
+# subset to filtered probes
+# This is needed because we filtered probes with non-ACTG SNPs
+genotype_num = genotype_num[manifest$Name,]
+# Sanity check, SNPs have to be in the same order in the genotype and manifest objects
+identical(rownames(genotype_num), manifest$Name)
+genotype_num[1:10,1:10]
+
+unique(manifest$Chr)
+
+# Modify a little bit the manifest so that it works with the function in the next chunk
+manifest = manifest %>% 
+  mutate(Chr = as.integer(Chr)) %>% 
+  dplyr::rename(Position = MapInfo, # This has to be an integer
+                SNP.Name = Name) # This has to be a character
+
+glimpse(manifest)
+```
+
+## Creating GDS and VCF files
+
+```{r creating GDS and VCF, message=FALSE, eval=FALSE}
+#Check that we dont have non-ACTG SNPs
+table(manifest$Allele.A.Plus, useNA =  "always")
+table(manifest$Allele.B.Plus, useNA =  "always")
+
+# Preparations for the ScanAnnotationDataFrame
+manifest_gds = manifest %>% 
+  select(SNP.Name, RsID, Chr, Position, Allele.A.Plus, Allele.B.Plus) %>% 
+  dplyr::rename(SNP.Name.Illumina = SNP.Name,
+         rsID = RsID,
+         chromosome = Chr,
+         position = Position,
+         alleleA = Allele.A.Plus,
+         alleleB = Allele.B.Plus) %>% 
+  mutate(snpID = 1:nrow(.)) #snpID needs to be integer for the creation of the GDS files
+
+
+# Define function to do file conversion
+#This function takes global variables (manifest, manifest_gds and snps), which is not ideal and can cause the function to have non desired outputs. Keep it in mind in case this is intended to work as a function outside of this Rmd in the future. 
+file_chrom <- function(chrom, path, study_name){ ## Function created by Fizza Fatima
+    #Create the base objects
+    manifest_chrom  = manifest %>% 
+      filter(Chr == chrom,
+             !Allele.A.Plus %in% c("NULL","I","D")) %>% 
+      arrange(Position)
+    
+    manifest_gds_chrom = manifest_gds %>% 
+       filter(chromosome == chrom,
+             !alleleA %in% c("NULL","I","D")) %>% 
+      arrange(position)
+      
+    #snps_chrom <- snps[rownames(manifest_gds_chrom),]
+    snps_chrom <- snps[manifest_chrom$SNP.Name,]
+
+    # Create a SnpAnnotationDataFrame
+    snpAnnot <- SnpAnnotationDataFrame(manifest_gds_chrom)
+  
+    # create a gds file
+    genmat <- as.matrix(snps_chrom)
+    rownames(genmat) = manifest_gds_chrom$snpID
+    sample.id <- colnames(snps_chrom) 
+    snp.id <-  manifest_gds_chrom$snpID	 #Needs to be an integer
+    snp.chromosome <- manifest_chrom$Chr
+    snp.position <- manifest_chrom$Position
+    snp.rs.id <- manifest_chrom$RsID
+    snp.allele <- paste(manifest_chrom$Allele.A.Plus,"/", manifest_chrom$Allele.B.Plus, sep = "")
+      
+    snpgdsCreateGeno(paste0(path, study_name, "_plus_012_ACTG_chr", chrom, ".gds", sep = ""),
+                     genmat = genmat,
+                     sample.id = sample.id, 
+                     snp.id = snp.id,
+                     snp.chromosome = snp.chromosome,
+                     snp.position = snp.position,
+                     snp.allele = snp.allele, 
+                     snp.rs.id = snp.rs.id,
+                     snpfirstdim = TRUE)
+      
+    #########################################################################################
+    
+    genoGDS <- GdsGenotypeReader(paste0(path, study_name, "_plus_012_ACTG_chr", chrom, ".gds"))
+    genoData <- GenotypeData(genoGDS)
+    
+    data_sex <- data.frame(scanID = getScanID(genoData)) #Note of Erick: I guess this is a reminiscent of an analysis that had sex as part of the individual metadata? Not sure about the importance of this step
+    scanAnnot <- ScanAnnotationDataFrame(data_sex)
+    
+    genoData <- GenotypeData(genoGDS, scanAnnot = scanAnnot, snpAnnot = snpAnnot)
+      
+    vcffile <- tempfile()
+    vcfWrite(genoData, vcf.file = paste0(path, study_name, "_plus_012_ACTG_chr", chrom, ".vcf"),
+             id.col = "rsID", sample.col = "scanID", block.size = 1100) 
+    close(genoData)
+    unlink(vcffile)
+}
+
+snps = genotype_num
+
+for(chromosome in 1:22){
+  file_chrom(chromosome, path = "/mnt/scratch/KoborLab/CHILD/Data/GSA_Array/Imputation/input/CHILD/", study_name = "CHILD") # replace file path and study name
+}
+```
+
+# Run imputation on GPCC
+
+This code has to be run on GPCC, so this is just an example of how the commands would look like.
+
+```{bash eval = FALSE}
+# Change file format to vcf.gz
+
+#The processed vcf.gz files should be stored under the input folders with study name (e.g. ${working_directory}/input/GSA/*.vcf.gz). This must be under the folder where you set up the imputation server
+cd Imputation/input
+#For some reason, bgzip *.vcf does not work with all of the files, so you have to do it one by one
+for FILE in $(ls | grep .vcf); do bgzip $FILE;done
+
+# Setup the working directory and prerequisite files
+export working_directory=/mnt/scratch/KoborLab/CHILD/Data/GSA_Array/Imputation # change the file path accordingly, but if in this folder the next 2 lines can be skipped
+#wget http://download.gwas.science/singularity/hippocampusgirl-imputation-protocol-latest.sif 
+
+# Setup the singularity for the imputation container
+salloc --partition=kobor_q --nodes=1 --cpus-per-task=16 --mem=128G
+module load singularity
+singularity shell --hostname localhost --bind ${working_directory}:/data /mnt/scratch/KoborLab/Imputation/hippocampusgirl-imputation-protocol-latest.sif
+
+rm -rf /data/hadoop
+
+# Running the imputation protocol
+setup-hadoop --n-cores 16 # at least 8 core is recommanded
+setup-imputationserver #This will download the 100k genomes reference panel (arouns 15G) If this ahs been done in the past in this folder, it will trhow a bunch of errors because things have been downloaded before and have certain permissions already. You can just ignore those messages. 
+imputationserver --study-name CHILD --population mixed # change population and study name here to match your cohort of interest
+
+#Unzip the results INSIDE of the singularity image
+cd ${working_directory}/output/CHILD/local/
+for FILE in $(ls | grep .zip); do 7z x -p"password" $FILE;done
+
+rm *.zip
+```
+
+If the commands are stuck, for example at Init HadoopUtil null This suggests that your Hadoop instance may not be accepting new jobs. The fastest way to solve this is to stop and delete the instance, and then to re-run the setup.
+
+```{bash eval = FALSE}
+# stop and delete
+stop-hadoop
+rm -rf /data/hadoop
+
+# re-run setup
+setup-hadoop --n-cores 16
+setup-imputationserver
+```
+
+Unzipping the files will result in 3 files per chromosome: .dose.vcf.gz, .empiricalDose.vcf.gz and .info.gz. I tried looking for what the empiricalDose file was, but I couldn't find much about it, other than it is ["used by MetaMinimac2 for meta-imputation."](https://genome.sph.umich.edu/wiki/Minimac4_Documentation). Metaimputation is ["an efficient method to combine genotype data after imputation with multiple reference panels"](https://pubmed.ncbi.nlm.nih.gov/35508176/). If you want to read more about MetaMinimac2, you can do it [here](https://github.com/yukt/MetaMinimac2). Since I am not interested in doing this, I will just ignore those files
+
+The .info.gz file contains some basic statistics of the output 
+
+The .dose.vcf.gz file also contains the MAF and Rsq information, and the imputed genotypes, so we will work with these files. Its header uncompressed looks like this:
+
+    ##fileformat=VCFv4.1 ##filedate=2022.11.22 ##contig=<ID=21> ##INFO=<ID=AF,Number=1,Type=Float,Description="Estimated Alternate Allele Frequency"> ##INFO=<ID=MAF,Number=1,Type=Float,Description="Estimated Minor Allele Frequency"> ##INFO=<ID=R2,Number=1,Type=Float,Description="Estimated Imputation Accuracy (R-square)"> ##INFO=<ID=ER2,Number=1,Type=Float,Description="Empirical (Leave-One-Out) R-square (available only for genotyped variants)"> ##INFO=<ID=IMPUTED,Number=0,Type=Flag,Description="Marker was imputed but NOT genotyped"> ##INFO=<ID=TYPED,Number=0,Type=Flag,Description="Marker was genotyped AND imputed"> ##INFO=<ID=TYPED_ONLY,Number=0,Type=Flag,Description="Marker was genotyped but NOT imputed"> ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype"> ##FORMAT=<ID=DS,Number=1,Type=Float,Description="Estimated Alternate Allele Dosage : [P(0/1)+2*P(1/1)]"> ##FORMAT=<ID=HDS,Number=2,Type=Float,Description="Estimated Haploid Alternate Allele Dosage "> ##FORMAT=<ID=GP,Number=3,Type=Float,Description="Estimated Posterior Probabilities for Genotypes 0/0, 0/1 and 1/1 "> ##pipeline=michigan-imputationserver-1.6.8 ##imputation=minimac4-1.0.2 ##phasing=eagle-2.4 ##panel=1000g-phase-3-v5 ##r2Filter=0.0
+
+# Post imputation QC
+
+After running the imputation, we will remove the imputed SNPs with low quality. This is usually achieved by using the following metrics: Suggested program: VCFtools/BCFtools
+
+-   R2: This metric is computed off your dataset (not the reference panel), and is defined as [observed dosage variance] / [expected dosage variance, given observed allele frequency and assuming Hardy-Weinberg equilibrium]. It is the squared correlation between the true and estimated dose of an allele across all imputed samples. r2 measure can be interpreted as the effective reduction in sample size when testing imputed alleles rather than the true alleles for association with a binary trait. Thresholds of 0.3 or larger are commonly used. An r2 threshold of 0.3 means that one is willing to accept an effective reduction in sample size of approximately two-thirds when performing an allelic test with imputed alleles. You can read more about this metric and genotyping in general in this [amazing review](https://pubmed.ncbi.nlm.nih.gov/29799802/). The MIS recommends a minimal Rsq value for common variants of ≥ 0.30, and a minimal Rsq value for low frequency/rare variants of ≥0.50. Dr. Anke Huels said that: "in single-cohort analyses people like to use 0.8 as imputation cut-off score... If it's across different cohorts you sometimes need go as low as 0.4 to have a good overlap of SNP". Therefore, there is a lot of variation in the usage of this metric. Since I am using a single cohort in my analysis and previous papers have used an r2 of 0.8, i will remove SNPs with r2 \<= 0.8.
+
+-   MAF: Minor allele Frequency. The threshold for this metric depends compeltely on the user and the analysis. For common variants, it is recommended to remove probes with MAF \<= 5% in the MIS tutorial.
+
+
+```{bash}
+# For this step, we have to exit the singularity image and run this while inside of a node of the server
+#Filter out data with low imputation quality
+
+#Remove files that we are not going to use
+rm *.empiricalDose.vcf.gz
+
+#Exclude imputed snps with an R2 < 0.8 and a MAF <0.01
+#Flags: -Oz output type vcf compressed, -i include
+cd ${working_directory}/output/CHILD/local/
+for FILE in $(ls | grep .dose.vcf.gz); do bcftools view -i 'R2>=.8 & MAF>=.01' -Oz $FILE > ${FILE%%.*}.filtered.vcf.gz;done #This takes like 1:40 hours
+
+#Get the number of SNPs before and after the filtering
+#Put this in a script and run it with sh script.sh
+<!-- #!/bin/bash -->
+
+<!-- echo -e "Chromosome\tsites_before_filtering\tsites_after_filtering">stats_filtering.tsv -->
+<!-- for CHROMOSOME in chr{1..21} -->
+<!-- do  -->
+<!-- 	sites_before=$(zcat $CHROMOSOME.dose.vcf.gz |grep -v "^#" |wc -l) -->
+<!-- 	sites_after=$(zcat $CHROMOSOME.filtered.vcf.gz |grep -v "^#" |wc -l) -->
+<!-- 	echo -e "$CHROMOSOME\t$sites_before\t$sites_after">>stats_filtering.tsv -->
+<!-- done -->
+```
+
+After this step, we will do an exploratory data analysis to make sure that the imputation quality looks good. I will do that in R, and will create a separate Rmd to keep this document tidy. You can look at it under the file "QC_imputation.Rmd"
+
+```{bash}
+#Merge the VCF files into a single one
+bcftools concat chr{1..22}.filtered.vcf.gz -Oz -o all_chrom_R_0.8_MAF_0.01.vcf.gz
+
+#Save raw vcf files in case someone wants to do a different MAF or R2 filtering (e.g. for meta analyses)
+bcftools concat chr{1..22}.dose.vcf.gz -Oz -o imputation_raw_all_chrom.vcf.gz
+rm chr{1..22}.dose.vcf.gz
+
+#Remove intermediate objects
+rm chr{1..22}.filtered.vcf.gz
+#gunzip chr20.info.gz #Will be used to assess imputation QC
+#rm *.info.gz
+#rm *.empiricalDose.vcf.gz
+```
+
+# Pruning
+
+We shall use PLINK's --indep command to generate a pruned subset of SNPs that are in approximate linkage equilibrium with each other. PLINK has two options for LD thinning/pruning: based on variance inflation factor (by regressing a SNP on all other SNPs in the window simultaneously) and based on pairwise correlation (R2). These are the --indep and --indep-pairwise options, respectively.
+
+The method "indep" requires three parameters: a window size in variant count or kilobase (if the 'kb' modifier is present) units, a variant count to shift the window at the end of each step, and a variance inflation factor (VIF) threshold. At each step, all variants in the current window with VIF exceeding the threshold are removed. Overall, --indep prunes based on the variance inflation factor (VIF), and recursively removes SNPs within a sliding window. The command below includes the default which is a 50 SNP windows for the sliding, 5 being the number of SNPs to shift the window at each step, and a 2 VIF threshold. The VIF is 1/(1-R\^2) where R\^2 is the multiple correlation coefficient for a SNP being regressed on all other SNPs simultaneously. That is, this considers the correlations between SNPs but also between linear combinations of SNPs. A VIF of 10 is often taken to represent near collinearity problems in standard multiple regression analyses (i.e. implies R\^2 of 0.9). A VIF of 1 would imply that the SNP is completely independent of all other SNPs. Practically, values between 1.5 and 2 should probably be used; particularly in small samples, if this threshold is too low and/or the window size is too large, too many SNPs may be removed.
+
+Pruning and clumping are used to keep a subset of SNPs that are nearly uncorrelated with each other. For instance, pruning is used before Principal Component Analysis to avoid capturing too much variance of linkage disequilibrium (LD) regions. Clumping is used to keep only one representative SNP per region of LD.
+
+```{bash, eval = FALSE}
+plink --vcf all_chrom_R_0.8_MAF_0.01.vcf.gz --indep-pairwise 50 5 0.5 --out all_chrom_CHILD_50_5_0.5 #VIF = 2
+```
+
+# Generating pruned dataset
+
+```{bash, eval = FALSE}
+bcftools view --include ID==@all_chrom_CHILD_50_5_0.5.prune.in -o pruned_all_chrom_R_0.8_MAF_0.01.vcf.gz -Oz all_chrom_R_0.8_MAF_0.01.vcf.gz 
+```
